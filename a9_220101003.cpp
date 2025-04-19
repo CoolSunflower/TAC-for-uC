@@ -10,46 +10,37 @@ int next_quad_index = 0;
 int temp_counter = 0;
 
 // --- SymbolTable Class Definition (Basic for Phase 1) ---
-class SymbolTable {
-public:
-    std::map<std::string, Symbol*> symbols; // Map symbol name to Symbol struct pointer
-    SymbolTable* parent; // Pointer to parent scope's table
-    int scope_level;    // Depth of scope
-
-    SymbolTable(SymbolTable* p = nullptr, int level = 0) : parent(p), scope_level(level) {}
-
-    ~SymbolTable() {
-        // Basic cleanup - delete symbols owned by this table
-        // Careful: Nested tables might be managed elsewhere or need specific deletion logic
-        for (auto const& [key, val] : symbols) {
-            if (val) {
-                 delete val->type; // Assuming type is owned by symbol
-                 // Don't delete nested_table here unless ownership is clear
-                 delete val;
-            }
+SymbolTable::~SymbolTable() {
+    // Basic cleanup - delete symbols owned by this table
+    // Careful: Nested tables might be managed elsewhere or need specific deletion logic
+    for (auto const& [key, val] : symbols) {
+        if (val) {
+                delete val->type; // Assuming type is owned by symbol
+                // Don't delete nested_table here unless ownership is clear
+                delete val;
         }
-        symbols.clear();
-        // Note: Deleting nested tables needs careful handling to avoid double deletes
-        // Might be better managed explicitly in end_scope or main cleanup
     }
+    symbols.clear();
+    // Note: Deleting nested tables needs careful handling to avoid double deletes
+    // Might be better managed explicitly in end_scope or main cleanup
+}   
 
-    Symbol* lookup(const std::string& name) {
-        auto it = symbols.find(name);
-        if (it != symbols.end()) {
-            return it->second; // Found in current scope
-        }
-        return nullptr; // Not found in this scope
+Symbol* SymbolTable::lookup(const std::string& name) {
+    auto it = symbols.find(name);
+    if (it != symbols.end()) {
+        return it->second; // Found in current scope
     }
+    return nullptr; // Not found in this scope
+}
 
-    bool insert(const std::string& name, Symbol* symbol) {
-        if (lookup(name)) {
-            return false; // Already exists in this scope
-        }
-        symbols[name] = symbol;
-        return true;
+bool SymbolTable::insert(const std::string& name, Symbol* symbol) {
+    if (lookup(name)) {
+        return false; // Already exists in this scope
     }
-};
-
+    symbols[name] = symbol;
+    return true;
+}
+    
 // --- TypeInfo Implementation ---
 std::string TypeInfo::toString() const {
     switch(base) {

@@ -7,7 +7,7 @@ FLEX = flex
 
 # Flags
 # CXXFLAGS: Flags for C++ compilation (-g for debug symbols)
-CXXFLAGS = -std=c++11 -Wall -Wextra -g
+CXXFLAGS = -std=c++11 -g
 # LDFLAGS: Flags for linking (usually empty unless specifying library paths)
 LDFLAGS =
 # LDLIBS: Libraries to link against (-lfl for flex library)

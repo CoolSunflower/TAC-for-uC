@@ -27,6 +27,16 @@ void yyerror(const char* s); // Error reporting function
 
 %code requires {
     #include "a9_220101003.h" 
+
+    // Define this OUTSIDE the union
+    struct DeclaratorAttributes {
+        std::string name;     // Non-trivial type now safely outside union
+        TypeInfo* type;
+        int array_dim;
+        
+        DeclaratorAttributes() : type(nullptr), array_dim(0) {}
+        ~DeclaratorAttributes() {} // Explicit destructor
+    }; 
 }
 
 /* Bison Declarations */
@@ -44,6 +54,9 @@ void yyerror(const char* s); // Error reporting function
     TypeInfo* type_ptr;      // Pointer to type information
     BackpatchList* list_ptr; // Pointer to a backpatch list (used later)
     
+    // --- Phase 2: Add attributes needed for declarations ---
+    DeclaratorAttributes* decl_attr_ptr;
+
     // Placeholder for expression attributes (used later)
     // struct { Symbol* place; TypeInfo* type; } expr_attr; 
     
@@ -62,7 +75,8 @@ void yyerror(const char* s); // Error reporting function
 %token RETURN VOID FLOAT INTEGER CHAR FOR CONST WHILE BOOL IF DO ELSE BEGIN_TOKEN END_TOKEN
 %token ARROW INC DEC SHL SHR LE GE EQ NE AND OR 
 
-%type <sval> direct_declarator 
+%type <decl_attr_ptr> direct_declarator declarator init_declarator init_declarator_list init_declarator_list_opt
+%type <type_ptr> type_specifier
 
 // Define types for non-terminals that will carry semantic values (Phase 1: mostly placeholders)
 // Examples (Uncomment and adapt in later phases):
@@ -197,50 +211,128 @@ expression
 
 /* 2. Declarations */
 declaration
-    : type_specifier init_declarator_list_opt ';' 
-        { /* Phase 2: Process completed declarations */ }
+    : type_specifier init_declarator_list_opt ';'
+        { /* Phase 2: Declaration complete. Type was passed down. Cleanup base type */
+          // init_declarator_list has processed each declarator using the type from $1
+          delete $1; // Delete the base TypeInfo* passed from type_specifier
+          if ($2) {
+              delete $2;  // Clean up declarator_attributes
+          }
+        }
     ;
 
 init_declarator_list_opt
-    : /* empty */ 
+    : /* empty */ { /* Nothing to do */ }
     | init_declarator_list
     ;
     
+
 init_declarator_list
     : init_declarator
+        { 
+          /* First declarator processed. Base type is implicitly available via $$.type */
+          $$ = $1;  // Pass pointer up
+        }
     | init_declarator_list ',' init_declarator
+        {
+          delete $1;  // Clean up previous declarator
+          $$ = $3;    // Pass newest one up
+        }
     ;
 
 init_declarator
-    : declarator                   { /* Phase 2: associate type with declarator */ }
-    | declarator '=' initializer   { /* Phase 2: handle initialization */ }
+    : declarator
+        { /* Phase 2: Got a declarator ($1). Base type was passed down implicitly */
+          // declarator ($1) contains name and potential array info.
+          // Base type is available from the rule above (declaration or init_declarator_list)
+          // Let's assume the base type is implicitly set in $$.type (passed from parent rule)
+          // Create the final type, combining base type and array info (if any)
+          TypeInfo* final_type = new TypeInfo($<type_ptr>0->base, $<type_ptr>0->width);
+
+          if ($1->array_dim > 0) { // Check if it was an array
+              final_type->base = TYPE_ARRAY;
+              final_type->dims.push_back($1->array_dim);
+              // Phase 7: Calculate actual width based on dim * element_width
+              final_type->width = $1->array_dim * $<type_ptr>0->width; // Basic size calculation
+          }
+
+          // Insert into symbol table
+          if (!insert_symbol($1->name, final_type)) {
+              yyerror(("Redeclaration of variable '" + $1->name + "'").c_str());
+              delete final_type; // Clean up if insertion failed
+          } else {
+              std::cout << "Debug: Inserted symbol '" << $1->name << "' with type '" << final_type->toString() << "' into scope " << current_symbol_table->scope_level << std::endl; // Optional debug
+          }
+          // Pass info up if needed (though not strictly necessary if list handles propagation)
+            $$ = $1;
+        }
+    | declarator '=' initializer
+        { /* Phase 2: Handle declaration with initializer */
+          // Similar code as above
+          TypeInfo* final_type = new TypeInfo($<type_ptr>0->base, $<type_ptr>0->width);
+                    
+          if ($1->array_dim > 0) {
+              final_type->base = TYPE_ARRAY;
+              final_type->dims.push_back($1->array_dim);
+              final_type->width = $1->array_dim * $<type_ptr>0->width;
+          }
+
+          if (!insert_symbol($1->name, final_type)) {
+              yyerror(("Redeclaration of variable '" + $1->name + "'").c_str());
+              delete final_type;
+          } else {
+              std::cout << "Debug: Inserted symbol '" << $1->name 
+                        << "' with type '" << final_type->toString() << "'" << std::endl;
+          }
+          
+          $$ = $1;
+        }
     ;
 
-type_specifier // Add CONST if needed
-    : VOID     { /* Phase 2: Set type attribute to VOID */ }
-    | CHAR     { /* Phase 2: Set type attribute to CHAR */ }
-    | INTEGER  { /* Phase 2: Set type attribute to INTEGER */ }
-    | FLOAT    { /* Phase 2: Set type attribute to FLOAT */ }
-    | BOOL     { /* Phase 2: Set type attribute to BOOL */ }
+type_specifier // Add CONST later if needed
+    : VOID     { $$ = new TypeInfo(TYPE_VOID, 0); }
+    | CHAR     { $$ = new TypeInfo(TYPE_CHAR, 1); }
+    | INTEGER  { $$ = new TypeInfo(TYPE_INTEGER, 4); } // Assuming 4 bytes
+    | FLOAT    { $$ = new TypeInfo(TYPE_FLOAT, 4); }  // Assuming 4 bytes
+    | BOOL     { $$ = new TypeInfo(TYPE_BOOL, 1); }
     ;
 
 declarator
-    // Add pointer rules later if needed: | pointer direct_declarator 
-    : direct_declarator          { /* Phase 2: pass declarator info up */ }
+    // Add pointer rules later if needed: | pointer direct_declarator
+    : direct_declarator
+        { /* Phase 2: Pass up info from direct_declarator */
+          $$ = $1;
+          // Base type gets combined in init_declarator rule
+        }
     ;
 
 direct_declarator
-    : IDENTIFIER                 
-        { /* Phase 2: Get identifier name. Store $1 for symbol creation */
-          // For Phase 1, just manage memory. We assume $1 will be used by init_declarator
-          $$ = $1; // Pass the sval pointer up
+    : IDENTIFIER
+        { /* Phase 2: Store identifier name, initialize type/dim */
+          $$ = new DeclaratorAttributes();
+          $$->name = std::string($1); 
+          delete[] $1; // Clean up the sval from lexer
         }
-    | '(' declarator ')'         
-        { /* Phase 2: handle complex declarators */ 
-          // If declarator contained sval, it should be managed there or passed up in $$
+    | '(' declarator ')'
+        { /* Phase 2: Handle parenthesized declarator */
+          $$ = $2; // Pass info from inner declarator
         }
-    | direct_declarator '[' INT_CONSTANT ']' { /* Phase 7: Array declaration */ } 
-    | direct_declarator '[' ']'              { /* Phase 7: Array declaration (no size) */ }
+    | direct_declarator '[' INT_CONSTANT ']'
+        {
+          if ($1->array_dim > 0) {
+              yyerror("Multidimensional arrays not supported in this phase");
+          }
+          $$ = $1;             // Reuse the pointer
+          $$->array_dim = $3;  // Update the dimension
+          if ($3 <= 0) {
+              yyerror("Array dimension must be positive");
+          }
+        }
+    | direct_declarator '[' ']'
+        { 
+          $$ = $1;
+          yyerror("Array dimension must be specified");
+        }
     | direct_declarator '(' parameter_list ')' { /* Phase 6: Function declarator */ }
     | direct_declarator '(' identifier_list_opt ')' { /* Phase 6: Function declarator (old style) */ }
     ;
@@ -254,10 +346,11 @@ parameter_list
 
 parameter_declaration
     : type_specifier declarator // Simplified for now
-        { /* Phase 6: Process parameter type and name */ 
-          // Declarator action should handle cleanup of its IDENTIFIER sval
+        { /* Phase 6: Process parameter type and name */
+          // Use logic similar to init_declarator to insert param into function scope
+          delete $1; // Cleanup TypeInfo from type_specifier
+          // Declarator action $2 manages its own name string ($2.name)
         }
-    // Add abstract declarator (type only) rule if needed
     ;
 
 identifier_list_opt
@@ -271,8 +364,7 @@ identifier_list
     ;
 
 initializer
-    : assignment_expression      { /* Phase 2: handle initializer expression */ }
-    // Add initializer list '{ ... }' rule later if needed
+    : assignment_expression      { /* Phase 3: Evaluate initializer */ }
     ;
 
 
@@ -286,11 +378,17 @@ statement
     ;
 
 compound_statement // Represents BEGIN/END block
-    : BEGIN_TOKEN 
-        { /* Phase 2: begin_scope(); */ } 
-      block_item_list_opt 
-      END_TOKEN 
-        { /* Phase 2: end_scope(); */ }
+    : BEGIN_TOKEN
+        { /* Phase 2: Enter a new scope */
+          begin_scope();
+          std::cout << "Debug: Entered scope level " << std::endl; // Optional debug
+        }
+      block_item_list_opt
+      END_TOKEN
+        { /* Phase 2: Exit the current scope */
+          std::cout << "Debug: Exiting scope level " << std::endl; // Optional debug
+          end_scope();
+        }
     ;
 
 block_item_list_opt
@@ -320,7 +418,7 @@ selection_statement // IF / IF-ELSE
         { /* Phase 4: Backpatching for if-else */ }
     ;
 
-iteration_statement // FOR loop (add WHILE/DO if in Micro C spec)
+iteration_statement // FOR loop
     : FOR '(' expression_opt ';' expression_opt ';' expression_opt ')' statement 
         { /* Phase 5: Backpatching for for */ }
     ;
@@ -333,12 +431,12 @@ expression_opt
 jump_statement // RETURN
     : RETURN ';'               { /* Phase 6: emit RETURN */ }
     | RETURN expression ';'    { /* Phase 6: emit RETURN value */ }
-    // Add BREAK/CONTINUE later if needed for loops
     ;
 
 /* 4. External Definitions (Top Level) */
 translation_unit
     : external_declaration
+        { /* Start of program */ }
     | translation_unit external_declaration
     ;
 
@@ -348,13 +446,16 @@ external_declaration
     ;
 
 function_definition
-    : type_specifier declarator compound_statement 
-        { /* Phase 6: Process function definition, symbol table, body */ 
-          // Declarator action should handle cleanup of its IDENTIFIER sval
+    : type_specifier declarator compound_statement
+        { /* Phase 6: Process function definition */
+          // Similar to variable declaration, insert function symbol
+          // The type ($1) and declarator ($2) provide info.
+          // Need function-specific TypeInfo creation.
+          delete $1; // Cleanup base return type
+          // Declarator $2 holds function name ($2.name)
+          // Compound statement $3 handles the body scope.
         }
     ;
-
-// Remove function_declarator rules if handled within direct_declarator
 
 %%
 
