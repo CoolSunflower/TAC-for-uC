@@ -212,7 +212,10 @@ expression
 /* 2. Declarations */
 declaration
     : type_specifier init_declarator_list_opt ';'
-        { /* Phase 2: Declaration complete. Type was passed down. Cleanup base type */
+        { 
+          apply_pending_types($1);
+
+          /* Phase 2: Declaration complete. Type was passed down. Cleanup base type */
           // init_declarator_list has processed each declarator using the type from $1
           delete $1; // Delete the base TypeInfo* passed from type_specifier
           if ($2) {
@@ -240,51 +243,58 @@ init_declarator_list
         }
     ;
 
+declaration
+    : type_specifier init_declarator_list_opt ';'
+        { 
+          // Apply the type to all pending symbols
+          apply_pending_types($1);
+          
+          // Clean up
+          delete $1;
+        }
+    ;
+
 init_declarator
     : declarator
-        { /* Phase 2: Got a declarator ($1). Base type was passed down implicitly */
-          // declarator ($1) contains name and potential array info.
-          // Base type is available from the rule above (declaration or init_declarator_list)
-          // Let's assume the base type is implicitly set in $$.type (passed from parent rule)
-          // Create the final type, combining base type and array info (if any)
-          TypeInfo* final_type = new TypeInfo($<type_ptr>0->base, $<type_ptr>0->width);
+        { 
+          // Create symbol with name but NO TYPE YET
+          std::string var_name = $1->name;
+          
+          // Insert into symbol table (without type)
+          Symbol* sym = insert_symbol(var_name, nullptr);
 
-          if ($1->array_dim > 0) { // Check if it was an array
-              final_type->base = TYPE_ARRAY;
-              final_type->dims.push_back($1->array_dim);
-              // Phase 7: Calculate actual width based on dim * element_width
-              final_type->width = $1->array_dim * $<type_ptr>0->width; // Basic size calculation
-          }
-
-          // Insert into symbol table
-          if (!insert_symbol($1->name, final_type)) {
-              yyerror(("Redeclaration of variable '" + $1->name + "'").c_str());
-              delete final_type; // Clean up if insertion failed
+          if (sym == NULL) {
+              yyerror(("Redeclaration of variable '" + var_name + "'").c_str());
           } else {
-              std::cout << "Debug: Inserted symbol '" << $1->name << "' with type '" << final_type->toString() << "' into scope " << current_symbol_table->scope_level << std::endl; // Optional debug
-          }
-          // Pass info up if needed (though not strictly necessary if list handles propagation)
-            $$ = $1;
-        }
-    | declarator '=' initializer
-        { /* Phase 2: Handle declaration with initializer */
-          // Similar code as above
-          TypeInfo* final_type = new TypeInfo($<type_ptr>0->base, $<type_ptr>0->width);
-                    
-          if ($1->array_dim > 0) {
-              final_type->base = TYPE_ARRAY;
-              final_type->dims.push_back($1->array_dim);
-              final_type->width = $1->array_dim * $<type_ptr>0->width;
-          }
-
-          if (!insert_symbol($1->name, final_type)) {
-              yyerror(("Redeclaration of variable '" + $1->name + "'").c_str());
-              delete final_type;
-          } else {
-              std::cout << "Debug: Inserted symbol '" << $1->name 
-                        << "' with type '" << final_type->toString() << "'" << std::endl;
+              if ($1->array_dim > 0) {
+                  sym->pending_dims.push_back($1->array_dim);
+              }
+              // Add to pending list for later type assignment
+              pending_type_symbols.push_back(sym);
+              std::cout << "Debug: Created pending symbol '" << var_name << "'" << std::endl;
           }
           
+          // Clean up and pass info up
+          $$ = $1;
+        }
+    | declarator '=' initializer
+        {
+          // Similar to above but with initializer
+          std::string var_name = $1->name;
+          
+          // Insert into symbol table (without type)
+          Symbol* sym = insert_symbol(var_name, nullptr);
+          if (sym == NULL) {
+              yyerror(("Redeclaration of variable '" + var_name + "'").c_str());
+          } else {
+              if ($1->array_dim > 0) {
+                  sym->pending_dims.push_back($1->array_dim);
+              }
+              // Add to pending list for later type assignment
+              pending_type_symbols.push_back(sym);
+              std::cout << "Debug: Created pending symbol '" << var_name << "' with initializer" << std::endl;
+          }
+
           $$ = $1;
         }
     ;
@@ -458,8 +468,6 @@ function_definition
     ;
 
 %%
-
-/* C++ Code Section */
 
 FILE* lex_output = nullptr; 
 

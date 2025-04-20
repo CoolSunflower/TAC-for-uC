@@ -8,6 +8,44 @@ SymbolTable* global_symbol_table = nullptr;
 SymbolTable* current_symbol_table = nullptr;
 int next_quad_index = 0;
 int temp_counter = 0;
+// Define with other globals
+std::vector<Symbol*> pending_type_symbols;
+
+// Add this helper function
+void apply_pending_types(TypeInfo* type) {
+    for (Symbol* sym : pending_type_symbols) {
+        if (sym) {
+            // Create appropriate type
+            TypeInfo* final_type;
+            
+            if (!sym->pending_dims.empty()) {
+                // Create array type
+                final_type = new TypeInfo(TYPE_ARRAY, 0);
+                final_type->dims = sym->pending_dims;
+                
+                // Create and link element type
+                final_type->ptr_type = new TypeInfo(type->base, type->width);
+                
+                // Calculate total size
+                int total_size = type->width;
+                for (int dim : sym->pending_dims) {
+                    total_size *= dim;
+                }
+                final_type->width = total_size;
+            } else {
+                // Create regular type
+                final_type = new TypeInfo(type->base, type->width);
+            }
+
+            sym->type = final_type;
+            sym->size = final_type->width;
+            
+            std::cout << "Debug: Applied type '" << final_type->toString() 
+                    << "' to pending symbol '" << sym->name << "'" << std::endl;
+        }
+    }
+    pending_type_symbols.clear(); // Reset for next declaration
+}
 
 // --- SymbolTable Class Definition (Basic for Phase 1) ---
 SymbolTable::~SymbolTable() {
@@ -159,14 +197,14 @@ Symbol* lookup_symbol(const std::string& name, bool recursive) {
 }
 
 // Basic insert for Phase 1
-bool insert_symbol(const std::string& name, TypeInfo* type) {
-    if (!current_symbol_table) return false; // Should not happen if initialized
+Symbol* insert_symbol(const std::string& name, TypeInfo* type) {
+    if (!current_symbol_table) return NULL; // Should not happen if initialized
 
     // Check if already exists in the *current* scope only
     if (lookup_symbol(name, false)) { 
         std::cerr << "Error: Redeclaration of symbol '" << name << "' in current scope." << std::endl;
         // In a real compiler, yyerror might be called or an error flag set
-        return false; 
+        return NULL; 
     }
 
     Symbol* sym = new Symbol(name, type); 
@@ -184,17 +222,17 @@ bool insert_symbol(const std::string& name, TypeInfo* type) {
     
     current_symbol_table->insert(name, sym);
     // std::cout << "Debug: Inserted symbol '" << name << "' into scope " << current_symbol_table->scope_level << std::endl; // Optional debug
-    return true;
+    return sym;
 }
 
 // Creates a new scope nested within the current one
 SymbolTable* begin_scope() {
-    if (!current_symbol_table) initialize_symbol_tables(); // Ensure tables exist
+    if (!current_symbol_table) initialize_symbol_tables();
 
     int next_level = current_symbol_table->scope_level + 1;
     SymbolTable* new_table = new SymbolTable(current_symbol_table, next_level);
-    current_symbol_table = new_table; // Update current scope
-    // std::cout << "Debug: Entered scope level " << next_level << std::endl; // Optional debug
+    current_symbol_table->child_scopes.push_back(new_table); // Add child to parent's list
+    current_symbol_table = new_table;
     return new_table;
 }
 
@@ -276,25 +314,28 @@ void backpatch(BackpatchList& list, int target_quad_index) {
 
 
 void print_symbol_table(SymbolTable* table_to_print, int level) {
+    if (!table_to_print) {
+        table_to_print = global_symbol_table;
+    }
+    
     if (!table_to_print) return;
 
     // Indentation for scope level
     std::string indent(level * 4, ' '); 
 
+    // Print table header with scope level
     if (level == 0) {
-         std::cout << "\n--- Symbol Table ---" << std::endl;
-         std::cout << indent << std::left << std::setw(20) << "Name" 
-                   << std::setw(15) << "Type" 
-                   << std::setw(8) << "Size" 
-                   << std::setw(8) << "Offset" 
-                   << "Scope Level: " << table_to_print->scope_level << std::endl;
-         std::cout << indent << std::string(60, '-') << std::endl;
-    } else {
-         std::cout << indent << "Scope Level: " << table_to_print->scope_level << std::endl;
-         std::cout << indent << std::string(60, '-') << std::endl;
+        std::cout << "\n--- Symbol Table ---" << std::endl;
     }
+    
+    std::cout << indent << std::left << std::setw(20) << "Name" 
+              << std::setw(15) << "Type" 
+              << std::setw(8) << "Size" 
+              << std::setw(8) << "Offset" 
+              << "Scope Level: " << table_to_print->scope_level << std::endl;
+    std::cout << indent << std::string(60, '-') << std::endl;
 
-
+    // Print all symbols in this table
     for (const auto& [name, symbol] : table_to_print->symbols) {
         if (!symbol) continue;
         std::cout << indent 
@@ -304,14 +345,25 @@ void print_symbol_table(SymbolTable* table_to_print, int level) {
                   << std::setw(8) << symbol->offset
                   << std::endl;
 
-        // Recursively print nested tables (if any symbol has one)
+        // CRITICAL FIX: Recursively print nested tables for functions/blocks
         if (symbol->nested_table) {
+            std::cout << indent << "Nested scope for " << symbol->name << ":" << std::endl;
             print_symbol_table(symbol->nested_table, level + 1);
         }
     }
-     if (level == 0) {
-          std::cout << "--------------------" << std::endl;
-     }
+
+    // CRITICAL FIX: After printing all symbols, check for child scopes
+    // This handles block scopes not associated with a specific symbol
+    if (table_to_print->child_scopes.size() > 0) {
+        for (auto* child : table_to_print->child_scopes) {
+            std::cout << indent << "Block scope:" << std::endl;
+            print_symbol_table(child, level + 1);
+        }
+    }
+    
+    if (level == 0) {
+        std::cout << "--------------------" << std::endl;
+    }
 }
 
 // Cleanup function definition

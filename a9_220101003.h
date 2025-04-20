@@ -72,6 +72,7 @@ struct Symbol {
     int offset = 0;
     SymbolTable* nested_table = nullptr;
     bool is_temp = false;
+    std::vector<int> pending_dims; // Temporarily store array dimensions
 
     Symbol(std::string n = "", TypeInfo* t = nullptr) : name(n), type(t), nested_table(nullptr) {}
 };
@@ -82,12 +83,17 @@ public:
     std::map<std::string, Symbol*> symbols;
     SymbolTable* parent;
     int scope_level;
+    std::vector<SymbolTable*> child_scopes; 
 
     SymbolTable(SymbolTable* p = nullptr, int level = 0) : parent(p), scope_level(level) {}
     ~SymbolTable();
     Symbol* lookup(const std::string& name);
     bool insert(const std::string& name, Symbol* symbol);
 };
+
+// Add near other extern declarations
+extern std::vector<Symbol*> pending_type_symbols; // Symbols waiting for type assignment
+void apply_pending_types(TypeInfo* type);
 
 // 4. QUAD AND BACKPATCH DEFINITIONS
 struct Quad {
@@ -119,7 +125,7 @@ int get_next_quad_index();
 
 void initialize_symbol_tables();
 Symbol* lookup_symbol(const std::string& name, bool recursive = true);
-bool insert_symbol(const std::string& name, TypeInfo* type);
+Symbol* insert_symbol(const std::string& name, TypeInfo* type);
 SymbolTable* begin_scope();
 void end_scope();
 void print_symbol_table(SymbolTable* table_to_print = nullptr, int level = 0);
