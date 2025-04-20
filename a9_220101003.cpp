@@ -147,9 +147,12 @@ std::string Quad::toString() const {
     std::string a2_str = arg2;
 
     // Regular binary/unary assignments (including conversions)
+    if (op == OP_ASSIGN){
+        return res_str + " = " + a1_str; // Assignment
+    }
     if ((op >= OP_PLUS && op <= OP_MOD) || (op >= OP_LT && op <= OP_NE) || (op == OP_AND) || (op == OP_OR) ||
-        (op == OP_UMINUS) || (op == OP_UPLUS) || (op == OP_NOT) || (op == OP_ASSIGN) ||
-        (op == OP_ADDR) || (op == OP_ASSIGN_DEREF) || (op == OP_INT2FLOAT) || (op == OP_FLOAT2INT) )
+        (op == OP_UMINUS) || (op == OP_UPLUS) || (op == OP_NOT) || (op == OP_ADDR) || 
+        (op == OP_ASSIGN_DEREF) || (op == OP_INT2FLOAT) || (op == OP_FLOAT2INT) )
     {
          // Note: Phase 3 style OP_LT etc. generate assignments, handled here.
          // Phase 4 style OP_IF_LT etc. are handled below.
@@ -355,7 +358,8 @@ TypeInfo* typecheck(TypeInfo* t1, TypeInfo* t2, op_code op) {
 
         // Relational Operators
         case OP_LT: case OP_GT: case OP_LE: case OP_GE: case OP_EQ: case OP_NE:
-             // --- Phase 3: Use updated check ---
+        case OP_IF_LT: case OP_IF_GT: case OP_IF_LE: case OP_IF_GE: case OP_IF_EQ: case OP_IF_NE:    
+            // --- Phase 3: Use updated check ---
             if (!is_numeric_or_char1 || (t2 && !is_numeric_or_char2)) { // t2 check needed
                 std::cerr << "Type Error: Relational operator requires numeric or char operands." << std::endl;
                 return nullptr;
@@ -374,6 +378,17 @@ TypeInfo* typecheck(TypeInfo* t1, TypeInfo* t2, op_code op) {
         // Assignment
         case OP_ASSIGN:
             if (!t2) return nullptr;
+
+            if (t2->base == TYPE_BOOL) {
+                std::cerr << "Type Error: Cannot assign the result of a boolean expression directly." << std::endl;
+                return nullptr;
+            }
+            // Also ensure LHS isn't bool (though user decl is disallowed, check anyway)
+            if (t1->base == TYPE_BOOL) {
+                std::cerr << "Type Error: Cannot assign to a variable of explicit boolean type." << std::endl;
+                return nullptr;
+            }
+
             // Check compatibility (Allow same type, int/char assigned to float, int to char, char to int?)
             if (t1->base == t2->base) return t1; // Same type
             if (t1->base == TYPE_FLOAT && (t2->base == TYPE_INTEGER || t2->base == TYPE_CHAR)) return t1; // Allow int/char -> float

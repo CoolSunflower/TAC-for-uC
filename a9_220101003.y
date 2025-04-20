@@ -103,7 +103,7 @@ void yyerror(const char* s);
 /* --- End Phase 3 --- */
 
 /* --- Phase 4: %type for markers and statements --- */
-%type <list_ptr> M N // Markers return BackpatchList*
+%type <list_ptr> M // Markers return BackpatchList*
 %type <stmt_attr_ptr> statement compound_statement selection_statement iteration_statement
 %type <stmt_attr_ptr> expression_statement jump_statement block_item block_item_list
 %type <stmt_attr_ptr> block_item_list_opt
@@ -134,10 +134,6 @@ void yyerror(const char* s);
 M   : /* empty */
         { $$ = new BackpatchList(makelist(get_next_quad_index()));
           std::cout << "Debug: Marker M created list pointing to next quad " << get_next_quad_index() << std::endl; }
-    ;
-N   : /* empty */
-        { $$ = new BackpatchList(makelist(get_next_quad_index())); emit(OP_GOTO, "");
-          std::cout << "Debug: Marker N created list pointing to GOTO at quad " << get_next_quad_index()-1 << std::endl; }
     ;
 /* --- End Phase 4 --- */
 
@@ -429,8 +425,8 @@ relational_expression
                 $$ = new ExprAttributes(); $$->type = new TypeInfo(TYPE_BOOL, 1);
                 $$->truelist = new BackpatchList(makelist(get_next_quad_index()));
                 $$->falselist = new BackpatchList(makelist(get_next_quad_index() + 1));
-                emit(OP_IF_LT, lop->name, rop->name, ""); /* Target in result */
-                emit(OP_GOTO, ""); /* Target in result */
+                emit(OP_IF_LT, "", lop->name, rop->name);
+                emit(OP_GOTO, "");
                 std::cout << "Debug: Relational Op < generated jumps" << std::endl;
                 delete left_attr; delete right_attr; } }
       }
@@ -444,7 +440,7 @@ relational_expression
                 Symbol* lop = convert_type(left_attr->place, cmp_type); Symbol* rop = convert_type(right_attr->place, cmp_type); delete cmp_type;
                 $$ = new ExprAttributes(); $$->type = new TypeInfo(TYPE_BOOL, 1);
                 $$->truelist = new BackpatchList(makelist(get_next_quad_index())); $$->falselist = new BackpatchList(makelist(get_next_quad_index() + 1));
-                emit(OP_IF_GT, lop->name, rop->name, ""); emit(OP_GOTO, "");
+                emit(OP_IF_GT, "", lop->name, rop->name); emit(OP_GOTO, "");
                 std::cout << "Debug: Relational Op > generated jumps" << std::endl;
                 delete left_attr; delete right_attr; } }
       }
@@ -458,7 +454,7 @@ relational_expression
                 Symbol* lop = convert_type(left_attr->place, cmp_type); Symbol* rop = convert_type(right_attr->place, cmp_type); delete cmp_type;
                 $$ = new ExprAttributes(); $$->type = new TypeInfo(TYPE_BOOL, 1);
                 $$->truelist = new BackpatchList(makelist(get_next_quad_index())); $$->falselist = new BackpatchList(makelist(get_next_quad_index() + 1));
-                emit(OP_IF_LE, lop->name, rop->name, ""); emit(OP_GOTO, "");
+                emit(OP_IF_LE, "", lop->name, rop->name); emit(OP_GOTO, "");
                 std::cout << "Debug: Relational Op <= generated jumps" << std::endl;
                 delete left_attr; delete right_attr; } }
       }
@@ -480,7 +476,7 @@ relational_expression
                 Symbol* lop = convert_type(left_attr->place, cmp_type); Symbol* rop = convert_type(right_attr->place, cmp_type); delete cmp_type;
                 $$ = new ExprAttributes(); $$->type = new TypeInfo(TYPE_BOOL, 1);
                 $$->truelist = new BackpatchList(makelist(get_next_quad_index())); $$->falselist = new BackpatchList(makelist(get_next_quad_index() + 1));
-                emit(OP_IF_GE, lop->name, rop->name, ""); emit(OP_GOTO, "");
+                emit(OP_IF_GE, "", lop->name, rop->name); emit(OP_GOTO, "");
                 std::cout << "Debug: Relational Op >= generated jumps" << std::endl;
                 delete left_attr; delete right_attr; 
             } 
@@ -500,7 +496,7 @@ equality_expression
                 Symbol* lop = convert_type(left_attr->place, cmp_type); Symbol* rop = convert_type(right_attr->place, cmp_type); delete cmp_type;
                 $$ = new ExprAttributes(); $$->type = new TypeInfo(TYPE_BOOL, 1);
                 $$->truelist = new BackpatchList(makelist(get_next_quad_index())); $$->falselist = new BackpatchList(makelist(get_next_quad_index() + 1));
-                emit(OP_IF_EQ, lop->name, rop->name, ""); emit(OP_GOTO, "");
+                emit(OP_IF_EQ, "", lop->name, rop->name); emit(OP_GOTO, "");
                 std::cout << "Debug: Equality Op == generated jumps" << std::endl;
                 delete left_attr; delete right_attr; } }
       }
@@ -514,7 +510,7 @@ equality_expression
                 Symbol* lop = convert_type(left_attr->place, cmp_type); Symbol* rop = convert_type(right_attr->place, cmp_type); delete cmp_type;
                 $$ = new ExprAttributes(); $$->type = new TypeInfo(TYPE_BOOL, 1);
                 $$->truelist = new BackpatchList(makelist(get_next_quad_index())); $$->falselist = new BackpatchList(makelist(get_next_quad_index() + 1));
-                emit(OP_IF_NE, lop->name, rop->name, ""); emit(OP_GOTO, "");
+                emit(OP_IF_NE, "", lop->name, rop->name); emit(OP_GOTO, "");
                 std::cout << "Debug: Equality Op != generated jumps" << std::endl;
                 delete left_attr; delete right_attr; } }
       }
@@ -830,56 +826,59 @@ selection_statement /* Type: stmt_attr_ptr */
                  delete stmt_attr; // stmt_attr->nextlist already handled
             }
         }
-    | IF '(' expression ')' M statement N ELSE M statement
-        {
+    | IF '(' expression ')' M statement ELSE M statement
+        { // Start of if-else action block
             ExprAttributes* expr_attr = $3;
-            BackpatchList* marker_M1_list = $5; // Start of 'then' statement
-            StmtAttributes* stmt1_attr = $6;
-            BackpatchList* marker_N_list = $7;  // GOTO skipping 'else' (list with 1 index)
-            BackpatchList* marker_M2_list = $9; // Start of 'else' statement
-            StmtAttributes* stmt2_attr = $10;
+            BackpatchList* m1_list = $5; // Before 'then' statement
+            StmtAttributes* s1_attr = $6; // 'then' statement attributes
 
-            if (!expr_attr) { yyerror("Invalid condition for IF-ELSE"); $$ = new StmtAttributes(); delete marker_M1_list; delete stmt1_attr; delete marker_N_list; delete marker_M2_list; delete stmt2_attr;}
-            else if (!expr_attr->type || expr_attr->type->base != TYPE_BOOL) {
-                 yyerror("IF-ELSE condition must be boolean"); delete expr_attr; delete marker_M1_list; delete stmt1_attr; delete marker_N_list; delete marker_M2_list; delete stmt2_attr; $$ = new StmtAttributes();
-            } else {
-                backpatch(*expr_attr->truelist, marker_M1_list->front());  // If true, jump to 'then' statement
-                backpatch(*expr_attr->falselist, marker_M2_list->front()); // If false, jump to 'else' statement
+            // --- Phase 4 Fix: Emit GOTO directly, create jump_list ---
+            BackpatchList* jump_list = new BackpatchList(makelist(get_next_quad_index()));
+            emit(OP_GOTO, ""); // GOTO to jump over 'else' part
+            std::cout << "Debug: Emitted GOTO over else at quad " << get_next_quad_index()-1 << std::endl;
+            // --- End Fix ---
+
+            BackpatchList* m2_list = $8; // Before 'else' statement ($7 is ELSE now)
+            StmtAttributes* s2_attr = $9; // 'else' statement attributes ($8 is M now)
+
+            if (!expr_attr) { yyerror("Invalid IF-ELSE cond"); $$ = new StmtAttributes(); delete m1_list; delete s1_attr; delete jump_list; delete m2_list; delete s2_attr;} // Fix: Added cleanup on error
+            else if (!expr_attr->type || expr_attr->type->base != TYPE_BOOL) { yyerror("IF-ELSE cond bool"); delete expr_attr; delete m1_list; delete s1_attr; delete jump_list; delete m2_list; delete s2_attr; $$ = new StmtAttributes(); } // Fix: Added cleanup on error
+            else {
+                backpatch(*expr_attr->truelist, m1_list->front());
+                backpatch(*expr_attr->falselist, m2_list->front()); // Backpatch false list to M before else stmt
 
                 $$ = new StmtAttributes();
-                // Merge nextlists: stmt1->next + N + stmt2->next
                 BackpatchList temp_list1, temp_list2;
 
-                // Combine stmt1->nextlist and N's list
-                if (stmt1_attr && stmt1_attr->nextlist) {
-                    temp_list1 = mergelist(*stmt1_attr->nextlist, *marker_N_list);
-                    delete stmt1_attr->nextlist; // Cleanup original list
+                // --- Phase 4 Fix: Merge using jump_list instead of N's list ---
+                // Combine stmt1->nextlist and the new jump_list
+                if (s1_attr && s1_attr->nextlist) {
+                    temp_list1 = mergelist(*s1_attr->nextlist, *jump_list);
+                    delete s1_attr->nextlist; // Cleanup original list from s1_attr
                 } else {
-                    temp_list1 = *marker_N_list; // Only the jump over else
+                    temp_list1 = *jump_list; // Only the jump over else
                 }
+                // --- End Fix ---
 
                 // Combine result with stmt2->nextlist
-                if (stmt2_attr && stmt2_attr->nextlist) {
-                     temp_list2 = mergelist(temp_list1, *stmt2_attr->nextlist);
-                     delete stmt2_attr->nextlist; // Cleanup original list
+                if (s2_attr && s2_attr->nextlist) {
+                    temp_list2 = mergelist(temp_list1, *s2_attr->nextlist);
+                    delete s2_attr->nextlist; // Cleanup original list from s2_attr
                 } else {
-                     temp_list2 = temp_list1; // Only jumps from 'then' and 'N'
+                    temp_list2 = temp_list1; // Only jumps from 'then' and the direct GOTO
                 }
-                 $$->nextlist = new BackpatchList(temp_list2); // Assign final merged list
+                $$->nextlist = new BackpatchList(temp_list2); // Assign final merged list
 
-                 std::cout << "Debug: IF-ELSE statement processed. Nextlist created." << std::endl;
+                std::cout << "Debug: IF-ELSE statement processed. Nextlist created." << std::endl;
 
-                 // Cleanup
-                 delete expr_attr->truelist;
-                 delete expr_attr->falselist;
-                 delete expr_attr;
-                 delete marker_M1_list;
-                 delete stmt1_attr; // stmt1_attr->nextlist already handled
-                 delete marker_N_list;
-                 delete marker_M2_list;
-                 delete stmt2_attr; // stmt2_attr->nextlist already handled
+                // Cleanup (Ensure jump_list is deleted)
+                delete expr_attr->truelist; delete expr_attr->falselist; delete expr_attr;
+                delete m1_list; delete s1_attr; // s1_attr->nextlist already deleted or was null
+                delete jump_list; // <<< Delete the directly created jump_list
+                delete m2_list; delete s2_attr; // s2_attr->nextlist already deleted or was null
             }
         }
+
     ;
 
 iteration_statement /* Type: stmt_attr_ptr */
