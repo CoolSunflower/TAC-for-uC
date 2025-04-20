@@ -306,39 +306,49 @@ Symbol* new_temp(TypeInfo* type) {
 // --- Placeholder Implementations ---
 
 // --- Phase 3: Implement typecheck ---
+// In a9_220101003.cpp
+
 TypeInfo* typecheck(TypeInfo* t1, TypeInfo* t2, op_code op) {
     if (!t1) return nullptr; // First operand must exist for most ops
 
-    bool is_numeric1 = (t1->base == TYPE_INTEGER || t1->base == TYPE_FLOAT);
-    bool is_numeric2 = t2 && (t2->base == TYPE_INTEGER || t2->base == TYPE_FLOAT);
+    // --- Phase 3: Updated numeric checks to include CHAR ---
+    bool is_numeric_or_char1 = (t1->base == TYPE_INTEGER || t1->base == TYPE_FLOAT || t1->base == TYPE_CHAR);
+    bool is_numeric_or_char2 = t2 && (t2->base == TYPE_INTEGER || t2->base == TYPE_FLOAT || t2->base == TYPE_CHAR);
+    // --- End Update ---
+
     bool is_bool1 = t1->base == TYPE_BOOL;
-    // bool is_bool2 = t2 && t2->base == TYPE_BOOL; // Needed for AND/OR later
+    // bool is_bool2 = t2 && t2->base == TYPE_BOOL; // For AND/OR
 
     switch (op) {
         // Binary Arithmetic
         case OP_PLUS: case OP_MINUS: case OP_MULT: case OP_DIV: case OP_MOD:
-            if (!is_numeric1 || !is_numeric2) {
-                std::cerr << "Type Error: Arithmetic operator requires numeric operands." << std::endl;
+            // --- Phase 3: Use updated check ---
+            if (!is_numeric_or_char1 || (t2 && !is_numeric_or_char2)) { // t2 check needed for binary ops
+                std::cerr << "Type Error: Arithmetic operator requires numeric or char operands." << std::endl;
                 return nullptr;
             }
-            // Special check for MOD - often only for integers
-            if (op == OP_MOD && (t1->base != TYPE_INTEGER || t2->base != TYPE_INTEGER)) {
-                 std::cerr << "Type Error: '%' operator requires integer operands." << std::endl;
+            // --- End Update ---
+
+            // Special check for MOD - must be integers (or char treated as int)
+            if (op == OP_MOD && (t1->base == TYPE_FLOAT || (t2 && t2->base == TYPE_FLOAT)) ) {
+                 std::cerr << "Type Error: '%' operator requires integer/char operands." << std::endl;
                  return nullptr;
             }
             // Promotion rule: If either is float, result is float
-            if (t1->base == TYPE_FLOAT || t2->base == TYPE_FLOAT)
-                return new TypeInfo(TYPE_FLOAT, 4); // Caller must manage this new TypeInfo
+            if (t1->base == TYPE_FLOAT || (t2 && t2->base == TYPE_FLOAT))
+                return new TypeInfo(TYPE_FLOAT, 8); // Use A9 float size
             else
-                return new TypeInfo(TYPE_INTEGER, 4); // Caller must manage this new TypeInfo
+                return new TypeInfo(TYPE_INTEGER, 4); // Result is int if mixing int/char
 
         // Relational Operators
         case OP_LT: case OP_GT: case OP_LE: case OP_GE: case OP_EQ: case OP_NE:
-            if (!is_numeric1 || !is_numeric2) {
-                std::cerr << "Type Error: Relational operator requires numeric operands." << std::endl;
+             // --- Phase 3: Use updated check ---
+            if (!is_numeric_or_char1 || (t2 && !is_numeric_or_char2)) { // t2 check needed
+                std::cerr << "Type Error: Relational operator requires numeric or char operands." << std::endl;
                 return nullptr;
             }
-            return new TypeInfo(TYPE_BOOL, 1); // Result is always bool, caller manages new TypeInfo
+             // --- End Update ---
+            return new TypeInfo(TYPE_BOOL, 1); // Result is always bool
 
         // Logical NOT
         case OP_NOT:
@@ -346,36 +356,50 @@ TypeInfo* typecheck(TypeInfo* t1, TypeInfo* t2, op_code op) {
                  std::cerr << "Type Error: '!' operator requires a boolean operand." << std::endl;
                  return nullptr;
             }
-            return new TypeInfo(TYPE_BOOL, 1); // Result is bool, caller manages new TypeInfo
+            return new TypeInfo(TYPE_BOOL, 1);
 
         // Assignment
         case OP_ASSIGN:
-            if (!t2) return nullptr; // RHS must exist
-            // Check compatibility (Allow same type, or int assigned to float)
-            if (t1->base == t2->base) return t1; // Compatible: return LHS type (no new object)
-            if (t1->base == TYPE_FLOAT && t2->base == TYPE_INTEGER) return t1; // Compatible: return LHS type
-            // Add other allowed assignments based on Micro C spec (e.g., char to int?)
-            std::cerr << "Type Error: Incompatible types for assignment." << std::endl;
-            return nullptr; // Incompatible assignment
+            if (!t2) return nullptr;
+            // Check compatibility (Allow same type, int/char assigned to float, int to char, char to int?)
+            if (t1->base == t2->base) return t1; // Same type
+            if (t1->base == TYPE_FLOAT && (t2->base == TYPE_INTEGER || t2->base == TYPE_CHAR)) return t1; // Allow int/char -> float
+            // --- Phase 3: Allow char <-> int assignment? Assume yes based on C ---
+            if ((t1->base == TYPE_INTEGER && t2->base == TYPE_CHAR) || (t1->base == TYPE_CHAR && t2->base == TYPE_INTEGER)) return t1; // Allow char <-> int
+            // --- End Update ---
+
+            std::cerr << "Type Error: Incompatible types for assignment from " << t2->toString() << " to " << t1->toString() << "." << std::endl;
+            return nullptr;
 
         // Unary Minus/Plus
         case OP_UMINUS: case OP_UPLUS:
-            if (!is_numeric1 || t2 != nullptr) { // Must be unary, operand must be numeric
-                std::cerr << "Type Error: Unary +/- requires a numeric operand." << std::endl;
+             // --- Phase 3: Use updated check ---
+            if (!is_numeric_or_char1 || t2 != nullptr) { // Must be unary
+                std::cerr << "Type Error: Unary +/- requires a numeric or char operand." << std::endl;
                 return nullptr;
             }
-            return t1; // Result type matches operand (no new object)
+             // --- End Update ---
+            // Result type matches operand (char promotes to int conceptually, but keep original type for now unless needed)
+            // If operand is char, treat result as int? Let's return INT if operand is CHAR.
+            if(t1->base == TYPE_CHAR) return new TypeInfo(TYPE_INTEGER, 4);
+            return t1; // Return original type if int/float
 
         // Add cases for AND, OR if handling non-short-circuit in Phase 3
-        // case OP_AND: case OP_OR:
-        //     if (!is_bool1 || !is_bool2) return nullptr;
-        //     return new TypeInfo(TYPE_BOOL, 1);
+        case OP_AND: case OP_OR:
+             // Check if operands are bool (or implicitly convertible in C - skip complex C rules for now)
+             if(t1->base != TYPE_BOOL || (t2 && t2->base != TYPE_BOOL)) {
+                 std::cerr << "Type Error: Logical operator requires boolean operands." << std::endl;
+                 return nullptr;
+             }
+             return new TypeInfo(TYPE_BOOL, 1);
+
 
         default:
             std::cerr << "Type Error: Operation " << opcode_to_string(op) << " not type-checked or invalid." << std::endl;
             return nullptr;
     }
 }
+
 
 // --- Phase 3: Implement convert_type ---
 Symbol* convert_type(Symbol* s, TypeInfo* target_type) {
@@ -400,16 +424,12 @@ Symbol* convert_type(Symbol* s, TypeInfo* target_type) {
         return temp;
     }
 
-    // Allowed Conversion: Float -> Integer
-    /*
-    if (current_type->base == TYPE_FLOAT && target_type->base == TYPE_INTEGER) {
-        std::cout << "Debug: Converting " << s->name << " from float to integer (truncation)." << std::endl;
-        TypeInfo* int_type = new TypeInfo(TYPE_INTEGER, 4);
-        Symbol* temp = new_temp(int_type);
-        emit(OP_FLOAT2INT, temp->name, s->name);
-        return temp;
+    if (current_type->base == TYPE_CHAR && target_type->base == TYPE_INTEGER) {
+        // No quad needs to be emitted, char is used as int directly.
+        // Return the original symbol.
+        std::cout << "Debug: Implicit conversion char->int for " << s->name << std::endl; // Optional Debug
+        return s;
     }
-    */
 
     // If no specific conversion rule matches, it's likely a type error
     // The caller (parser action after typecheck) should handle this mismatch.

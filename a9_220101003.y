@@ -1,568 +1,922 @@
 %{
-/* Parser for micro C language (Phase 1 - C++ Integration) */
-#include <cstdio>       // Use C++ headers
+/* Parser for micro C language (Phase 3 - Expression TAC Generation - CORRECTED v4 - NO MACRO) */
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <iostream>     // For std::cerr, std::cout
-#include <string>       // For std::string (used in translator)
-#include <vector>       // For std::vector (used in translator)
-#include <list>         // For std::list (used in translator)
+#include <iostream>
+#include <string>
+#include <vector>
+#include <list>
+#include <sstream> /* For converting constants to string */
 
-// External declarations
-extern int yylex();       // The lexer function
-extern FILE* yyin;      // Input file stream (remains FILE*)
-extern int line_no;     // Current line number from lexer
-extern char* yytext;    // Current lexeme text (provided by lexer)
+/* External declarations */
+extern int yylex();
+extern FILE* yyin;
+extern int line_no;
+extern char* yytext;
+extern FILE* lex_output; /* Keep for logging */
 
-// Function Prototypes
-void yyerror(const char* s); // Error reporting function
+/* Function Prototypes */
+void yyerror(const char* s);
 
-// --- REMOVED OLD C Symbol Table Structures and Functions ---
-// NO struct symbol definition here
-// NO global Symbol* symbol_table here
-// NO int current_scope here
-// NO insert_symbol, lookup_symbol, print_symbol_table, free_symbol_table function definitions here
+/* --- NO BINARY_OP_ACTION Macro Here --- */
 
 %}
 
 %code requires {
-    #include "a9_220101003.h" 
+    #include "a9_220101003.h"
 
-    // Define this OUTSIDE the union
+    /* Structure for declarator attributes (from Phase 2) */
     struct DeclaratorAttributes {
-        std::string name;     // Non-trivial type now safely outside union
+        std::string name;
         TypeInfo* type;
         int array_dim;
-        
         DeclaratorAttributes() : type(nullptr), array_dim(0) {}
-        ~DeclaratorAttributes() {} // Explicit destructor
-    }; 
+        ~DeclaratorAttributes() {}
+    };
+
+    /* Structure for expression attributes (Phase 3) */
+    struct ExprAttributes {
+        Symbol* place = nullptr;
+        TypeInfo* type = nullptr;
+        ExprAttributes() {}
+         ~ExprAttributes() { /* Assume type owned elsewhere */ }
+    };
 }
 
 /* Bison Declarations */
 
-// Define the union for semantic values
 %union {
     int ival;
     float fval;
     char cval;
-    char* sval; // For IDENTIFIER, STRING_LITERAL (lexer provides char*)
-                // ** CRITICAL: Parser actions MUST delete[] sval memory **
+    char* sval; /* From lexer, MUST delete[] */
 
-    // Pointers to structures needed for semantic analysis (from a9_translator.h)
-    Symbol* sym_ptr;         // Pointer to a symbol table entry
-    TypeInfo* type_ptr;      // Pointer to type information
-    BackpatchList* list_ptr; // Pointer to a backpatch list (used later)
-    
-    // --- Phase 2: Add attributes needed for declarations ---
-    DeclaratorAttributes* decl_attr_ptr;
+    Symbol* sym_ptr;
+    TypeInfo* type_ptr;
+    BackpatchList* list_ptr;
 
-    // Placeholder for expression attributes (used later)
-    // struct { Symbol* place; TypeInfo* type; } expr_attr; 
-    
-    // Placeholder for statement attributes (used later)
-    // struct { BackpatchList* next; BackpatchList* breaklist; BackpatchList* continuelist; } stmt_attr;
-
+    DeclaratorAttributes* decl_attr_ptr; /* Phase 2 */
+    ExprAttributes* expr_attr_ptr;       /* Phase 3 */
 };
 
-// Define types for tokens that carry values from the lexer (using the new union fields)
+/* Token Types */
 %token <ival> INT_CONSTANT
 %token <fval> FLOAT_CONSTANT
 %token <cval> CHAR_CONSTANT
-%token <sval> IDENTIFIER STRING_LITERAL // Uses char* from lexer
+%token <sval> IDENTIFIER STRING_LITERAL
 
-// Define keywords and operators (no associated value needed in union)
+/* Keywords & Operators */
 %token RETURN VOID FLOAT INTEGER CHAR FOR CONST WHILE BOOL IF DO ELSE BEGIN_TOKEN END_TOKEN
-%token ARROW INC DEC SHL SHR LE GE EQ NE AND OR 
+%token ARROW INC DEC SHL SHR LE GE EQ NE AND OR
 
+/* Non-terminal Types */
 %type <decl_attr_ptr> direct_declarator declarator init_declarator init_declarator_list init_declarator_list_opt
 %type <type_ptr> type_specifier
 
-// Define types for non-terminals that will carry semantic values (Phase 1: mostly placeholders)
-// Examples (Uncomment and adapt in later phases):
-// %type <type_ptr> type_specifier 
-// %type <sym_ptr> primary_expression assignment_expression unary_expression
-// %type <expr_attr> expression conditional_expression logical_OR_expression ... etc.
-// %type <list_ptr> M N             
-// %type <stmt_attr> statement 
+/* --- Phase 3: %type for expressions --- */
+%type <expr_attr_ptr> primary_expression postfix_expression unary_expression
+%type <expr_attr_ptr> multiplicative_expression additive_expression relational_expression
+%type <expr_attr_ptr> equality_expression logical_AND_expression logical_OR_expression
+%type <expr_attr_ptr> conditional_expression assignment_expression expression
+%type <expr_attr_ptr> initializer argument_expression_list
+%type <ival> unary_operator
+%type <expr_attr_ptr> expression_opt
+/* --- End Phase 3 --- */
 
-/* Operator Precedence and Associativity (Copied from original, check Micro C spec if different) */
+
+/* Operator Precedence and Associativity */
 %right '='
-// %right '?' ':' // Micro C spec doesn't explicitly list ternary, remove if unsupported
 %left OR
 %left AND
-// %left '|' // Assume bitwise ops are not in Micro C unless spec says otherwise
-// %left '&' // Assume bitwise ops are not in Micro C unless spec says otherwise
 %left EQ NE
 %left '<' '>' LE GE
-// %left SHL SHR // Assume bitwise shift ops are not in Micro C
 %left '+' '-'
 %left '*' '/' '%'
-%right '!' // Logical NOT
-// %right '~' // Assume bitwise NOT is not in Micro C
-// %right '&' '*' // Unary Address-of/Dereference (Add later if supported)
-// %left '.' ARROW // Member access (Add later if supported)
-// %left '[' ']' '(' ')' // Array/Function call (Highest precedence, handled by rules)
+%right '!' /* Logical NOT (unary) */
+%precedence UMINUS /* Placeholder for unary minus precedence */
 
-
-// Handling the "dangling else" ambiguity
-%nonassoc IFX  /* Prec for IF without ELSE */
-%nonassoc ELSE /* Prec for IF with ELSE */
+/* Dangling else */
+%nonassoc IFX
+%nonassoc ELSE
 
 /* Start symbol */
 %start translation_unit
 
 %%
 
-/* Grammar Rules (Phase 1 - Structure + Cleanup, NO TAC actions yet) */
+/* Grammar Rules (Phase 3 - Expression TAC - CORRECTED v4 - NO MACRO) */
 
 /* 1. Expressions */
 primary_expression
-    : IDENTIFIER         { /* Phase 3: lookup symbol */ delete[] $1; } // Cleanup sval
-    | INT_CONSTANT       { /* Phase 3: handle constant */ }
-    | FLOAT_CONSTANT     { /* Phase 3: handle constant */ }
-    | CHAR_CONSTANT      { /* Phase 3: handle constant */ }
-    | STRING_LITERAL     { /* Phase 3: handle literal */ delete[] $1; } // Cleanup sval
-    | '(' expression ')' { /* Phase 3: $$ = $2 */ }
+    : IDENTIFIER {
+        /* Phase 3: Lookup identifier */
+        Symbol* sym = lookup_symbol($1, true);
+        if (!sym) {
+            yyerror(("Undeclared identifier '" + std::string($1) + "'").c_str());
+            $$ = nullptr;
+        } else if (!sym->type) {
+             yyerror(("Identifier '" + std::string($1) + "' used before type assignment").c_str());
+             $$ = nullptr;
+        } else {
+            $$ = new ExprAttributes();
+            $$->place = sym;
+            $$->type = sym->type;
+            std::cout << "Debug: Primary IDENTIFIER '" << sym->name << "' type: " << sym->type->toString() << std::endl;
+        }
+        delete[] $1;
+      }
+    | INT_CONSTANT {
+        /* Phase 3: Handle integer constant */
+        TypeInfo* const_type = new TypeInfo(TYPE_INTEGER, 4);
+        Symbol* temp = new_temp(const_type);
+        std::string const_str = std::to_string($1);
+        emit(OP_ASSIGN, temp->name, const_str);
+        $$ = new ExprAttributes();
+        $$->place = temp;
+        $$->type = const_type;
+        std::cout << "Debug: Primary INT_CONSTANT " << const_str << std::endl;
+      }
+    | FLOAT_CONSTANT {
+        /* Phase 3: Handle float constant */
+        TypeInfo* const_type = new TypeInfo(TYPE_FLOAT, 8); /* A9 spec */
+        Symbol* temp = new_temp(const_type);
+        std::ostringstream oss;
+        oss << std::fixed << $1;
+        std::string const_str = oss.str();
+        emit(OP_ASSIGN, temp->name, const_str);
+        $$ = new ExprAttributes();
+        $$->place = temp;
+        $$->type = const_type;
+         std::cout << "Debug: Primary FLOAT_CONSTANT " << const_str << std::endl;
+      }
+    | CHAR_CONSTANT {
+         /* Phase 3: Handle char constant */
+         TypeInfo* const_type = new TypeInfo(TYPE_CHAR, 1);
+         Symbol* temp = new_temp(const_type);
+         std::string const_str = std::to_string(static_cast<int>($1));
+         emit(OP_ASSIGN, temp->name, const_str);
+         $$ = new ExprAttributes();
+         $$->place = temp;
+         $$->type = const_type;
+         std::cout << "Debug: Primary CHAR_CONSTANT " << const_str << std::endl;
+      }
+    | STRING_LITERAL {
+         std::cout << "Debug: Primary STRING_LITERAL (ignored for TAC)" << std::endl;
+         delete[] $1;
+         $$ = nullptr;
+      }
+    | '(' expression ')' {
+         $$ = $2; /* Propagate, transfer ownership */
+         std::cout << "Debug: Primary ( expression )" << std::endl;
+      }
     ;
 
 postfix_expression
-    : primary_expression             { /* Phase 3: $$ = $1 */ }
-    | postfix_expression '[' expression ']' { /* Phase 7: array access */ }
-    | postfix_expression '(' ')'     { /* Phase 6: function call (no args) */ }
-    | postfix_expression '(' argument_expression_list ')' { /* Phase 6: function call (w/ args) */ }
-    | postfix_expression ARROW IDENTIFIER { /* Phase ?: struct/ptr access */ delete[] $3; } // Cleanup IDENTIFIER sval
+    : primary_expression { $$ = $1; } /* Propagation */
+    | postfix_expression '[' expression ']' { /* Phase 7 */ $$ = nullptr; delete $1; delete $3; }
+    | postfix_expression '(' ')'     { /* Phase 6 */ $$ = nullptr; delete $1; }
+    | postfix_expression '(' argument_expression_list ')' { /* Phase 6 */ $$ = nullptr; delete $1; delete $3; }
+    | postfix_expression ARROW IDENTIFIER { /* Phase ? */ delete[] $3; $$ = nullptr; delete $1; }
     ;
 
-argument_expression_list
-    : assignment_expression                { /* Phase 6: process arg */ }
-    | argument_expression_list ',' assignment_expression { /* Phase 6: process args */ }
+argument_expression_list /* Placeholder */
+    : assignment_expression { $$ = $1; }
+    | argument_expression_list ',' assignment_expression { delete $1; $$ = $3; }
     ;
 
 unary_expression
-    : postfix_expression         { /* Phase 3: $$ = $1 */ }
-    | unary_operator unary_expression { /* Phase 3: apply operator */ }
-    // Add INC/DEC later if needed by Micro C spec
+    : postfix_expression { $$ = $1; } /* Propagation */
+    | unary_operator unary_expression %prec UMINUS
+      {
+        /* Phase 3: Handle unary operators */
+        op_code op = (op_code)$1;
+        ExprAttributes* operand_attr = $2;
+
+        if (!operand_attr) {
+            yyerror("Invalid operand for unary operator");
+            $$ = nullptr;
+        } else {
+            TypeInfo* temp_result_base_type = typecheck(operand_attr->type, nullptr, op);
+            if (!temp_result_base_type) {
+                 yyerror("Invalid type for unary operator");
+                 delete operand_attr;
+                 $$ = nullptr;
+            } else {
+                 Symbol* operand_place = operand_attr->place;
+                 Symbol* result_temp = new_temp(temp_result_base_type);
+
+                 emit(op, result_temp->name, operand_place->name);
+
+                 $$ = new ExprAttributes();
+                 $$->place = result_temp;
+                 $$->type = result_temp->type;
+
+                 std::cout << "Debug: Unary Op " << opcode_to_string(op) << " -> " << result_temp->name << std::endl;
+                 delete operand_attr;
+            }
+        }
+      }
     ;
 
-unary_operator // Adapt based on actual Micro C spec
-    : '&' { /* Phase 7: Address-of */ }
-    | '*' { /* Phase 7: Dereference */ }
-    | '+' { /* Phase 3: Unary plus */ }
-    | '-' { /* Phase 3: Unary minus */ }
-    | '!' { /* Phase 3: Logical NOT */ }
-    // Remove '~' if not supported
+unary_operator /* Return opcode as int/ival */
+    : '+' { $$ = (int)OP_UPLUS; }
+    | '-' { $$ = (int)OP_UMINUS; }
+    | '!' { $$ = (int)OP_NOT; }
     ;
 
 multiplicative_expression
-    : unary_expression             { /* Phase 3: $$ = $1 */ }
-    | multiplicative_expression '*' unary_expression { /* Phase 3: emit MUL */ }
-    | multiplicative_expression '/' unary_expression { /* Phase 3: emit DIV */ }
-    | multiplicative_expression '%' unary_expression { /* Phase 3: emit MOD */ }
+    : unary_expression { $$ = $1; }
+    | multiplicative_expression '*' unary_expression
+      { /* Phase 3: Action for * operator */
+        ExprAttributes* left_attr = $1;
+        ExprAttributes* right_attr = $3;
+        if (!left_attr || !right_attr) {
+            yyerror("Invalid operand(s) for binary operator '*'");
+            delete left_attr; delete right_attr;
+            $$ = nullptr;
+        } else {
+            TypeInfo* temp_result_base_type = typecheck(left_attr->type, right_attr->type, OP_MULT);
+            if (!temp_result_base_type) {
+                yyerror("Type mismatch for binary operator '*'");
+                delete left_attr; delete right_attr;
+                $$ = nullptr;
+            } else {
+                TypeInfo* required_type = (temp_result_base_type->base == TYPE_FLOAT) ? temp_result_base_type : left_attr->type;
+                Symbol* left_operand = convert_type(left_attr->place, required_type);
+                Symbol* right_operand = convert_type(right_attr->place, required_type);
+                if (left_operand != left_attr->place || right_operand != right_attr->place) { std::cout << "Debug: Conversion applied for " << opcode_to_string(OP_MULT) << std::endl; }
+                Symbol* result_temp = new_temp(temp_result_base_type);
+                emit(OP_MULT, result_temp->name, left_operand->name, right_operand->name);
+                $$ = new ExprAttributes();
+                $$->place = result_temp;
+                $$->type = result_temp->type;
+                std::cout << "Debug: Binary Op *: " << left_operand->name << ", " << right_operand->name << " -> " << result_temp->name << std::endl;
+                delete left_attr; delete right_attr;
+            }
+        }
+      }
+    | multiplicative_expression '/' unary_expression
+      { /* Phase 3: Action for / operator */
+        ExprAttributes* left_attr = $1;
+        ExprAttributes* right_attr = $3;
+        if (!left_attr || !right_attr) {
+            yyerror("Invalid operand(s) for binary operator '/'");
+            delete left_attr; delete right_attr;
+            $$ = nullptr;
+        } else {
+            TypeInfo* temp_result_base_type = typecheck(left_attr->type, right_attr->type, OP_DIV);
+            if (!temp_result_base_type) {
+                yyerror("Type mismatch for binary operator '/'");
+                delete left_attr; delete right_attr;
+                $$ = nullptr;
+            } else {
+                TypeInfo* required_type = (temp_result_base_type->base == TYPE_FLOAT) ? temp_result_base_type : left_attr->type;
+                Symbol* left_operand = convert_type(left_attr->place, required_type);
+                Symbol* right_operand = convert_type(right_attr->place, required_type);
+                if (left_operand != left_attr->place || right_operand != right_attr->place) { std::cout << "Debug: Conversion applied for " << opcode_to_string(OP_DIV) << std::endl; }
+                Symbol* result_temp = new_temp(temp_result_base_type);
+                emit(OP_DIV, result_temp->name, left_operand->name, right_operand->name);
+                $$ = new ExprAttributes();
+                $$->place = result_temp;
+                $$->type = result_temp->type;
+                std::cout << "Debug: Binary Op /: " << left_operand->name << ", " << right_operand->name << " -> " << result_temp->name << std::endl;
+                delete left_attr; delete right_attr;
+            }
+        }
+      }
+    | multiplicative_expression '%' unary_expression
+      { /* Phase 3: Action for % operator */
+        ExprAttributes* left_attr = $1;
+        ExprAttributes* right_attr = $3;
+        if (!left_attr || !right_attr) {
+            yyerror("Invalid operand(s) for binary operator '%'");
+            delete left_attr; delete right_attr;
+            $$ = nullptr;
+        } else {
+            TypeInfo* temp_result_base_type = typecheck(left_attr->type, right_attr->type, OP_MOD);
+            if (!temp_result_base_type) {
+                yyerror("Type mismatch for binary operator '%'");
+                delete left_attr; delete right_attr;
+                $$ = nullptr;
+            } else {
+                TypeInfo* required_type = (temp_result_base_type->base == TYPE_FLOAT) ? temp_result_base_type : left_attr->type; /* Should be int only for MOD */
+                Symbol* left_operand = convert_type(left_attr->place, required_type);
+                Symbol* right_operand = convert_type(right_attr->place, required_type);
+                if (left_operand != left_attr->place || right_operand != right_attr->place) { std::cout << "Debug: Conversion applied for " << opcode_to_string(OP_MOD) << std::endl; }
+                Symbol* result_temp = new_temp(temp_result_base_type);
+                emit(OP_MOD, result_temp->name, left_operand->name, right_operand->name);
+                $$ = new ExprAttributes();
+                $$->place = result_temp;
+                $$->type = result_temp->type;
+                std::cout << "Debug: Binary Op %: " << left_operand->name << ", " << right_operand->name << " -> " << result_temp->name << std::endl;
+                delete left_attr; delete right_attr;
+            }
+        }
+      }
     ;
 
 additive_expression
-    : multiplicative_expression    { /* Phase 3: $$ = $1 */ }
-    | additive_expression '+' multiplicative_expression { /* Phase 3: emit ADD */ }
-    | additive_expression '-' multiplicative_expression { /* Phase 3: emit SUB */ }
+    : multiplicative_expression { $$ = $1; }
+    | additive_expression '+' multiplicative_expression
+      { /* Phase 3: Action for + operator */
+        ExprAttributes* left_attr = $1;
+        ExprAttributes* right_attr = $3;
+        if (!left_attr || !right_attr) {
+            yyerror("Invalid operand(s) for binary operator '+'");
+            delete left_attr; delete right_attr;
+            $$ = nullptr;
+        } else {
+            TypeInfo* temp_result_base_type = typecheck(left_attr->type, right_attr->type, OP_PLUS);
+            if (!temp_result_base_type) {
+                yyerror("Type mismatch for binary operator '+'");
+                delete left_attr; delete right_attr;
+                $$ = nullptr;
+            } else {
+                TypeInfo* required_type = (temp_result_base_type->base == TYPE_FLOAT) ? temp_result_base_type : left_attr->type;
+                Symbol* left_operand = convert_type(left_attr->place, required_type);
+                Symbol* right_operand = convert_type(right_attr->place, required_type);
+                if (left_operand != left_attr->place || right_operand != right_attr->place) { std::cout << "Debug: Conversion applied for " << opcode_to_string(OP_PLUS) << std::endl; }
+                Symbol* result_temp = new_temp(temp_result_base_type);
+                emit(OP_PLUS, result_temp->name, left_operand->name, right_operand->name);
+                $$ = new ExprAttributes();
+                $$->place = result_temp;
+                $$->type = result_temp->type;
+                std::cout << "Debug: Binary Op +: " << left_operand->name << ", " << right_operand->name << " -> " << result_temp->name << std::endl;
+                delete left_attr; delete right_attr;
+            }
+        }
+      }
+    | additive_expression '-' multiplicative_expression
+      { /* Phase 3: Action for - operator */
+        ExprAttributes* left_attr = $1;
+        ExprAttributes* right_attr = $3;
+        if (!left_attr || !right_attr) {
+            yyerror("Invalid operand(s) for binary operator '-'");
+            delete left_attr; delete right_attr;
+            $$ = nullptr;
+        } else {
+            TypeInfo* temp_result_base_type = typecheck(left_attr->type, right_attr->type, OP_MINUS);
+            if (!temp_result_base_type) {
+                yyerror("Type mismatch for binary operator '-'");
+                delete left_attr; delete right_attr;
+                $$ = nullptr;
+            } else {
+                TypeInfo* required_type = (temp_result_base_type->base == TYPE_FLOAT) ? temp_result_base_type : left_attr->type;
+                Symbol* left_operand = convert_type(left_attr->place, required_type);
+                Symbol* right_operand = convert_type(right_attr->place, required_type);
+                if (left_operand != left_attr->place || right_operand != right_attr->place) { std::cout << "Debug: Conversion applied for " << opcode_to_string(OP_MINUS) << std::endl; }
+                Symbol* result_temp = new_temp(temp_result_base_type);
+                emit(OP_MINUS, result_temp->name, left_operand->name, right_operand->name);
+                $$ = new ExprAttributes();
+                $$->place = result_temp;
+                $$->type = result_temp->type;
+                std::cout << "Debug: Binary Op -: " << left_operand->name << ", " << right_operand->name << " -> " << result_temp->name << std::endl;
+                delete left_attr; delete right_attr;
+            }
+        }
+      }
     ;
 
-// Remove SHL/SHR rules if bitwise shift not supported
+/* Skip SHL/SHR */
 
 relational_expression
-    : additive_expression          { /* Phase 3: $$ = $1 */ }
-    | relational_expression '<' additive_expression { /* Phase 3: emit LT */ }
-    | relational_expression '>' additive_expression { /* Phase 3: emit GT */ }
-    | relational_expression LE additive_expression  { /* Phase 3: emit LE */ }
-    | relational_expression GE additive_expression  { /* Phase 3: emit GE */ }
+    : additive_expression { $$ = $1; }
+    | relational_expression '<' additive_expression
+      { /* Phase 3: Action for < operator */
+        ExprAttributes* left_attr = $1;
+        ExprAttributes* right_attr = $3;
+        if (!left_attr || !right_attr) {
+            yyerror("Invalid operand(s) for binary operator '<'");
+            delete left_attr; delete right_attr;
+            $$ = nullptr;
+        } else {
+            TypeInfo* temp_result_base_type = typecheck(left_attr->type, right_attr->type, OP_LT);
+            if (!temp_result_base_type) {
+                yyerror("Type mismatch for binary operator '<'");
+                delete left_attr; delete right_attr;
+                $$ = nullptr;
+            } else {
+                /* Determine type for comparison (usually highest precision) */
+                TypeInfo* compare_type = (left_attr->type->base == TYPE_FLOAT || right_attr->type->base == TYPE_FLOAT) ?
+                                          new TypeInfo(TYPE_FLOAT, 8) : new TypeInfo(TYPE_INTEGER, 4); /* Use A9 float size */
+                Symbol* left_operand = convert_type(left_attr->place, compare_type);
+                Symbol* right_operand = convert_type(right_attr->place, compare_type);
+                delete compare_type; /* Clean up temporary compare_type */
+                if (left_operand != left_attr->place || right_operand != right_attr->place) { std::cout << "Debug: Conversion applied for " << opcode_to_string(OP_LT) << std::endl; }
+                Symbol* result_temp = new_temp(temp_result_base_type); /* Result is bool */
+                emit(OP_LT, result_temp->name, left_operand->name, right_operand->name);
+                $$ = new ExprAttributes();
+                $$->place = result_temp;
+                $$->type = result_temp->type;
+                std::cout << "Debug: Binary Op <: " << left_operand->name << ", " << right_operand->name << " -> " << result_temp->name << std::endl;
+                delete left_attr; delete right_attr;
+            }
+        }
+      }
+    | relational_expression '>' additive_expression
+      { /* Phase 3: Action for > operator */
+        ExprAttributes* left_attr = $1;
+        ExprAttributes* right_attr = $3;
+        if (!left_attr || !right_attr) {
+            yyerror("Invalid operand(s) for binary operator '>'");
+            delete left_attr; delete right_attr;
+            $$ = nullptr;
+        } else {
+            TypeInfo* temp_result_base_type = typecheck(left_attr->type, right_attr->type, OP_GT);
+            if (!temp_result_base_type) {
+                yyerror("Type mismatch for binary operator '>'");
+                delete left_attr; delete right_attr;
+                $$ = nullptr;
+            } else {
+                TypeInfo* compare_type = (left_attr->type->base == TYPE_FLOAT || right_attr->type->base == TYPE_FLOAT) ?
+                                          new TypeInfo(TYPE_FLOAT, 8) : new TypeInfo(TYPE_INTEGER, 4);
+                Symbol* left_operand = convert_type(left_attr->place, compare_type);
+                Symbol* right_operand = convert_type(right_attr->place, compare_type);
+                delete compare_type;
+                if (left_operand != left_attr->place || right_operand != right_attr->place) { std::cout << "Debug: Conversion applied for " << opcode_to_string(OP_GT) << std::endl; }
+                Symbol* result_temp = new_temp(temp_result_base_type); /* Bool */
+                emit(OP_GT, result_temp->name, left_operand->name, right_operand->name);
+                $$ = new ExprAttributes();
+                $$->place = result_temp;
+                $$->type = result_temp->type;
+                std::cout << "Debug: Binary Op >: " << left_operand->name << ", " << right_operand->name << " -> " << result_temp->name << std::endl;
+                delete left_attr; delete right_attr;
+            }
+        }
+      }
+    | relational_expression LE additive_expression
+      { /* Phase 3: Action for <= operator */
+        ExprAttributes* left_attr = $1;
+        ExprAttributes* right_attr = $3;
+        if (!left_attr || !right_attr) {
+            yyerror("Invalid operand(s) for binary operator '<='");
+            delete left_attr; delete right_attr;
+            $$ = nullptr;
+        } else {
+            TypeInfo* temp_result_base_type = typecheck(left_attr->type, right_attr->type, OP_LE);
+            if (!temp_result_base_type) {
+                yyerror("Type mismatch for binary operator '<='");
+                delete left_attr; delete right_attr;
+                $$ = nullptr;
+            } else {
+                 TypeInfo* compare_type = (left_attr->type->base == TYPE_FLOAT || right_attr->type->base == TYPE_FLOAT) ?
+                                          new TypeInfo(TYPE_FLOAT, 8) : new TypeInfo(TYPE_INTEGER, 4);
+                Symbol* left_operand = convert_type(left_attr->place, compare_type);
+                Symbol* right_operand = convert_type(right_attr->place, compare_type);
+                delete compare_type;
+                if (left_operand != left_attr->place || right_operand != right_attr->place) { std::cout << "Debug: Conversion applied for " << opcode_to_string(OP_LE) << std::endl; }
+                Symbol* result_temp = new_temp(temp_result_base_type); /* Bool */
+                emit(OP_LE, result_temp->name, left_operand->name, right_operand->name);
+                $$ = new ExprAttributes();
+                $$->place = result_temp;
+                $$->type = result_temp->type;
+                std::cout << "Debug: Binary Op <=: " << left_operand->name << ", " << right_operand->name << " -> " << result_temp->name << std::endl;
+                delete left_attr; delete right_attr;
+            }
+        }
+      }
+    | relational_expression GE additive_expression
+      { /* Phase 3: Action for >= operator */
+        ExprAttributes* left_attr = $1;
+        ExprAttributes* right_attr = $3;
+        if (!left_attr || !right_attr) {
+            yyerror("Invalid operand(s) for binary operator '>='");
+            delete left_attr; delete right_attr;
+            $$ = nullptr;
+        } else {
+            TypeInfo* temp_result_base_type = typecheck(left_attr->type, right_attr->type, OP_GE);
+            if (!temp_result_base_type) {
+                yyerror("Type mismatch for binary operator '>='");
+                delete left_attr; delete right_attr;
+                $$ = nullptr;
+            } else {
+                 TypeInfo* compare_type = (left_attr->type->base == TYPE_FLOAT || right_attr->type->base == TYPE_FLOAT) ?
+                                          new TypeInfo(TYPE_FLOAT, 8) : new TypeInfo(TYPE_INTEGER, 4);
+                Symbol* left_operand = convert_type(left_attr->place, compare_type);
+                Symbol* right_operand = convert_type(right_attr->place, compare_type);
+                delete compare_type;
+                if (left_operand != left_attr->place || right_operand != right_attr->place) { std::cout << "Debug: Conversion applied for " << opcode_to_string(OP_GE) << std::endl; }
+                Symbol* result_temp = new_temp(temp_result_base_type); /* Bool */
+                emit(OP_GE, result_temp->name, left_operand->name, right_operand->name);
+                $$ = new ExprAttributes();
+                $$->place = result_temp;
+                $$->type = result_temp->type;
+                std::cout << "Debug: Binary Op >=: " << left_operand->name << ", " << right_operand->name << " -> " << result_temp->name << std::endl;
+                delete left_attr; delete right_attr;
+            }
+        }
+      }
     ;
 
 equality_expression
-    : relational_expression        { /* Phase 3: $$ = $1 */ }
-    | equality_expression EQ relational_expression { /* Phase 3: emit EQ */ }
-    | equality_expression NE relational_expression { /* Phase 3: emit NE */ }
+    : relational_expression { $$ = $1; }
+    | equality_expression EQ relational_expression
+      { /* Phase 3: Action for == operator */
+        ExprAttributes* left_attr = $1;
+        ExprAttributes* right_attr = $3;
+        if (!left_attr || !right_attr) {
+            yyerror("Invalid operand(s) for binary operator '=='");
+            delete left_attr; delete right_attr;
+            $$ = nullptr;
+        } else {
+            TypeInfo* temp_result_base_type = typecheck(left_attr->type, right_attr->type, OP_EQ);
+            if (!temp_result_base_type) {
+                yyerror("Type mismatch for binary operator '=='");
+                delete left_attr; delete right_attr;
+                $$ = nullptr;
+            } else {
+                 TypeInfo* compare_type = (left_attr->type->base == TYPE_FLOAT || right_attr->type->base == TYPE_FLOAT) ?
+                                          new TypeInfo(TYPE_FLOAT, 8) : new TypeInfo(TYPE_INTEGER, 4);
+                Symbol* left_operand = convert_type(left_attr->place, compare_type);
+                Symbol* right_operand = convert_type(right_attr->place, compare_type);
+                delete compare_type;
+                if (left_operand != left_attr->place || right_operand != right_attr->place) { std::cout << "Debug: Conversion applied for " << opcode_to_string(OP_EQ) << std::endl; }
+                Symbol* result_temp = new_temp(temp_result_base_type); /* Bool */
+                emit(OP_EQ, result_temp->name, left_operand->name, right_operand->name);
+                $$ = new ExprAttributes();
+                $$->place = result_temp;
+                $$->type = result_temp->type;
+                std::cout << "Debug: Binary Op ==: " << left_operand->name << ", " << right_operand->name << " -> " << result_temp->name << std::endl;
+                delete left_attr; delete right_attr;
+            }
+        }
+      }
+    | equality_expression NE relational_expression
+      { /* Phase 3: Action for != operator */
+        ExprAttributes* left_attr = $1;
+        ExprAttributes* right_attr = $3;
+        if (!left_attr || !right_attr) {
+            yyerror("Invalid operand(s) for binary operator '!='");
+            delete left_attr; delete right_attr;
+            $$ = nullptr;
+        } else {
+            TypeInfo* temp_result_base_type = typecheck(left_attr->type, right_attr->type, OP_NE);
+            if (!temp_result_base_type) {
+                yyerror("Type mismatch for binary operator '!='");
+                delete left_attr; delete right_attr;
+                $$ = nullptr;
+            } else {
+                 TypeInfo* compare_type = (left_attr->type->base == TYPE_FLOAT || right_attr->type->base == TYPE_FLOAT) ?
+                                          new TypeInfo(TYPE_FLOAT, 8) : new TypeInfo(TYPE_INTEGER, 4);
+                Symbol* left_operand = convert_type(left_attr->place, compare_type);
+                Symbol* right_operand = convert_type(right_attr->place, compare_type);
+                delete compare_type;
+                if (left_operand != left_attr->place || right_operand != right_attr->place) { std::cout << "Debug: Conversion applied for " << opcode_to_string(OP_NE) << std::endl; }
+                Symbol* result_temp = new_temp(temp_result_base_type); /* Bool */
+                emit(OP_NE, result_temp->name, left_operand->name, right_operand->name);
+                $$ = new ExprAttributes();
+                $$->place = result_temp;
+                $$->type = result_temp->type;
+                std::cout << "Debug: Binary Op !=: " << left_operand->name << ", " << right_operand->name << " -> " << result_temp->name << std::endl;
+                delete left_attr; delete right_attr;
+            }
+        }
+      }
     ;
 
-// Remove bitwise AND/OR rules ('&', '|') if not supported
+/* Skip bitwise &, | */
 
-logical_AND_expression
-    : equality_expression          { /* Phase 3: $$ = $1 */ }
-    | logical_AND_expression AND equality_expression { /* Phase 3: emit AND */ }
+logical_AND_expression /* Phase 3: Simple bool op */
+    : equality_expression { $$ = $1; }
+    | logical_AND_expression AND equality_expression
+      { /* Phase 3: Action for && operator */
+        ExprAttributes* left_attr = $1;
+        ExprAttributes* right_attr = $3;
+        if (!left_attr || !right_attr) {
+            yyerror("Invalid operand(s) for binary operator '&&'");
+            delete left_attr; delete right_attr;
+            $$ = nullptr;
+        } else {
+             /* Assuming typecheck handles bool requirement for OP_AND */
+            TypeInfo* temp_result_base_type = typecheck(left_attr->type, right_attr->type, OP_AND);
+            if (!temp_result_base_type) {
+                yyerror("Type mismatch for binary operator '&&'");
+                delete left_attr; delete right_attr;
+                $$ = nullptr;
+            } else {
+                /* No conversion needed if typecheck enforces bool */
+                Symbol* left_operand = left_attr->place;
+                Symbol* right_operand = right_attr->place;
+                Symbol* result_temp = new_temp(temp_result_base_type); /* Bool */
+                emit(OP_AND, result_temp->name, left_operand->name, right_operand->name);
+                $$ = new ExprAttributes();
+                $$->place = result_temp;
+                $$->type = result_temp->type;
+                std::cout << "Debug: Binary Op &&: " << left_operand->name << ", " << right_operand->name << " -> " << result_temp->name << std::endl;
+                delete left_attr; delete right_attr;
+            }
+        }
+      }
     ;
 
-logical_OR_expression
-    : logical_AND_expression       { /* Phase 3: $$ = $1 */ }
-    | logical_OR_expression OR logical_AND_expression { /* Phase 3: emit OR */ }
+logical_OR_expression /* Phase 3: Simple bool op */
+    : logical_AND_expression { $$ = $1; }
+    | logical_OR_expression OR logical_AND_expression
+      { /* Phase 3: Action for || operator */
+        ExprAttributes* left_attr = $1;
+        ExprAttributes* right_attr = $3;
+        if (!left_attr || !right_attr) {
+            yyerror("Invalid operand(s) for binary operator '||'");
+            delete left_attr; delete right_attr;
+            $$ = nullptr;
+        } else {
+             /* Assuming typecheck handles bool requirement for OP_OR */
+            TypeInfo* temp_result_base_type = typecheck(left_attr->type, right_attr->type, OP_OR);
+            if (!temp_result_base_type) {
+                yyerror("Type mismatch for binary operator '||'");
+                delete left_attr; delete right_attr;
+                $$ = nullptr;
+            } else {
+                /* No conversion needed if typecheck enforces bool */
+                Symbol* left_operand = left_attr->place;
+                Symbol* right_operand = right_attr->place;
+                Symbol* result_temp = new_temp(temp_result_base_type); /* Bool */
+                emit(OP_OR, result_temp->name, left_operand->name, right_operand->name);
+                $$ = new ExprAttributes();
+                $$->place = result_temp;
+                $$->type = result_temp->type;
+                std::cout << "Debug: Binary Op ||: " << left_operand->name << ", " << right_operand->name << " -> " << result_temp->name << std::endl;
+                delete left_attr; delete right_attr;
+            }
+        }
+      }
     ;
 
-conditional_expression // Remove if ternary '?:' not supported
-    : logical_OR_expression        { /* Phase 3: $$ = $1 */ }
-    // | logical_OR_expression '?' expression ':' conditional_expression { /* Phase ?: ternary op */ }
+conditional_expression /* Ternary '?:' - Skip */
+    : logical_OR_expression { $$ = $1; }
     ;
 
 assignment_expression
-    : conditional_expression       { /* Phase 3: $$ = $1 */ }
-    | unary_expression '=' assignment_expression { /* Phase 3: emit ASSIGN */ }
+    : conditional_expression { $$ = $1; } /* Propagation */
+    | unary_expression '=' assignment_expression
+      {
+        /* Phase 3: Simple assignment */
+        ExprAttributes* lhs_attr = $1;
+        ExprAttributes* rhs_attr = $3;
+
+        if (!lhs_attr || !rhs_attr) {
+            yyerror("Invalid operand(s) for assignment");
+            delete lhs_attr; delete rhs_attr;
+            $$ = nullptr;
+        } else if (!lhs_attr->place || lhs_attr->place->is_temp) { /* L-value check */
+            yyerror("L-value required for assignment target");
+            delete lhs_attr; delete rhs_attr;
+            $$ = nullptr;
+        } else if (!lhs_attr->type) { /* Type check */
+             yyerror("Invalid target for assignment (missing type)");
+             delete lhs_attr; delete rhs_attr;
+             $$ = nullptr;
+        } else {
+             TypeInfo* assign_check_type = typecheck(lhs_attr->type, rhs_attr->type, OP_ASSIGN);
+             if (!assign_check_type) {
+                 yyerror("Incompatible types for assignment");
+                 delete lhs_attr; delete rhs_attr;
+                 $$ = nullptr;
+             } else {
+                 Symbol* rhs_operand = convert_type(rhs_attr->place, lhs_attr->type);
+                 if (rhs_operand != rhs_attr->place) { std::cout << "Debug: Conversion applied for assignment RHS" << std::endl; }
+                 emit(OP_ASSIGN, lhs_attr->place->name, rhs_operand->name);
+
+                 $$ = new ExprAttributes();
+                 $$->place = lhs_attr->place;
+                 $$->type = lhs_attr->type;
+
+                 std::cout << "Debug: Assignment: " << lhs_attr->place->name << " = " << rhs_operand->name << std::endl;
+                 delete lhs_attr;
+                 delete rhs_attr;
+             }
+        }
+      }
     ;
 
 expression
-    : assignment_expression        { /* Phase 3: $$ = $1 */ }
+    : assignment_expression { $$ = $1; } /* Propagation */
     ;
 
 /* 2. Declarations */
 declaration
     : type_specifier init_declarator_list_opt ';'
-        { 
+        {
+          /* Phase 2: Apply type */
           apply_pending_types($1);
-
-          /* Phase 2: Declaration complete. Type was passed down. Cleanup base type */
-          // init_declarator_list has processed each declarator using the type from $1
-          delete $1; // Delete the base TypeInfo* passed from type_specifier
-          if ($2) {
-              delete $2;  // Clean up declarator_attributes
-          }
+          delete $1; /* Clean base TypeInfo */
+          if ($2) { delete $2; } /* Clean last DeclaratorAttributes */
         }
     ;
 
 init_declarator_list_opt
-    : /* empty */ { /* Nothing to do */ }
-    | init_declarator_list
+    : /* empty */ { $$ = nullptr; }
+    | init_declarator_list { $$ = $1; }
     ;
-    
 
 init_declarator_list
-    : init_declarator
-        { 
-          /* First declarator processed. Base type is implicitly available via $$.type */
-          $$ = $1;  // Pass pointer up
-        }
-    | init_declarator_list ',' init_declarator
-        {
-          delete $1;  // Clean up previous declarator
-          $$ = $3;    // Pass newest one up
-        }
-    ;
-
-declaration
-    : type_specifier init_declarator_list_opt ';'
-        { 
-          // Apply the type to all pending symbols
-          apply_pending_types($1);
-          
-          // Clean up
-          delete $1;
-        }
+    : init_declarator { $$ = $1; }
+    | init_declarator_list ',' init_declarator { delete $1; $$ = $3; }
     ;
 
 init_declarator
     : declarator
-        { 
-          // Create symbol with name but NO TYPE YET
+        {
+          /* Phase 2: Create pending symbol */
           std::string var_name = $1->name;
-          
-          // Insert into symbol table (without type)
           Symbol* sym = insert_symbol(var_name, nullptr);
-
-          if (sym == NULL) {
-              yyerror(("Redeclaration of variable '" + var_name + "'").c_str());
-          } else {
-              if ($1->array_dim > 0) {
-                  sym->pending_dims.push_back($1->array_dim);
-              }
-              // Add to pending list for later type assignment
+          if (sym == nullptr) { yyerror(("Redeclaration of variable '" + var_name + "'").c_str()); }
+          else {
+              if ($1->array_dim > 0) { sym->pending_dims.push_back($1->array_dim); }
               pending_type_symbols.push_back(sym);
               std::cout << "Debug: Created pending symbol '" << var_name << "'" << std::endl;
           }
-          
-          // Clean up and pass info up
           $$ = $1;
         }
     | declarator '=' initializer
         {
-          // Similar to above but with initializer
+          /* Phase 2/3: Create pending symbol & init TAC */
           std::string var_name = $1->name;
-          
-          // Insert into symbol table (without type)
           Symbol* sym = insert_symbol(var_name, nullptr);
-          if (sym == NULL) {
+          ExprAttributes* init_attr = $3; /* $3 is expr_attr_ptr */
+
+          if (sym == nullptr) {
               yyerror(("Redeclaration of variable '" + var_name + "'").c_str());
+              if (init_attr) delete init_attr;
           } else {
-              if ($1->array_dim > 0) {
-                  sym->pending_dims.push_back($1->array_dim);
-              }
-              // Add to pending list for later type assignment
+              if ($1->array_dim > 0) { sym->pending_dims.push_back($1->array_dim); }
               pending_type_symbols.push_back(sym);
               std::cout << "Debug: Created pending symbol '" << var_name << "' with initializer" << std::endl;
-          }
 
+              if (!init_attr) {
+                  yyerror(("Invalid initializer expression for '" + var_name + "'").c_str());
+              } else {
+                  /* Phase 3 Workaround: Emit raw assignment */
+                  emit(OP_ASSIGN, sym->name, init_attr->place->name);
+                  std::cout << "Debug: Emitted initializer assign (NO TYPE CHECK/CONV): " << sym->name << " = " << init_attr->place->name << std::endl;
+                  delete init_attr;
+              }
+          }
           $$ = $1;
         }
     ;
 
-type_specifier // Add CONST later if needed
+type_specifier /* Phase 2: Creates TypeInfo */
     : VOID     { $$ = new TypeInfo(TYPE_VOID, 0); }
     | CHAR     { $$ = new TypeInfo(TYPE_CHAR, 1); }
-    | INTEGER  { $$ = new TypeInfo(TYPE_INTEGER, 4); } // Assuming 4 bytes
-    | FLOAT    { $$ = new TypeInfo(TYPE_FLOAT, 4); }  // Assuming 4 bytes
+    | INTEGER  { $$ = new TypeInfo(TYPE_INTEGER, 4); }
+    | FLOAT    { $$ = new TypeInfo(TYPE_FLOAT, 8); } /* A9 spec */
     | BOOL     { $$ = new TypeInfo(TYPE_BOOL, 1); }
     ;
 
-declarator
-    // Add pointer rules later if needed: | pointer direct_declarator
-    : direct_declarator
-        { /* Phase 2: Pass up info from direct_declarator */
-          $$ = $1;
-          // Base type gets combined in init_declarator rule
-        }
+declarator /* Phase 2: Passes up DeclaratorAttributes */
+    : direct_declarator { $$ = $1; }
     ;
 
-direct_declarator
-    : IDENTIFIER
-        { /* Phase 2: Store identifier name, initialize type/dim */
-          $$ = new DeclaratorAttributes();
-          $$->name = std::string($1); 
-          delete[] $1; // Clean up the sval from lexer
-        }
-    | '(' declarator ')'
-        { /* Phase 2: Handle parenthesized declarator */
-          $$ = $2; // Pass info from inner declarator
-        }
+direct_declarator /* Phase 2: Creates DeclaratorAttributes */
+    : IDENTIFIER { $$ = new DeclaratorAttributes(); $$->name = std::string($1); delete[] $1; }
+    | '(' declarator ')' { $$ = $2; }
     | direct_declarator '[' INT_CONSTANT ']'
         {
-          if ($1->array_dim > 0) {
-              yyerror("Multidimensional arrays not supported in this phase");
-          }
-          $$ = $1;             // Reuse the pointer
-          $$->array_dim = $3;  // Update the dimension
-          if ($3 <= 0) {
-              yyerror("Array dimension must be positive");
-          }
-        }
-    | direct_declarator '[' ']'
-        { 
           $$ = $1;
-          yyerror("Array dimension must be specified");
+          if ($$->array_dim > 0) { yyerror("Multidimensional arrays not supported"); }
+          if ($3 <= 0) { yyerror("Array dimension must be positive"); $$->array_dim = 0; }
+          else { $$->array_dim = $3; }
         }
-    | direct_declarator '(' parameter_list ')' { /* Phase 6: Function declarator */ }
-    | direct_declarator '(' identifier_list_opt ')' { /* Phase 6: Function declarator (old style) */ }
+    | direct_declarator '[' ']' { $$ = $1; yyerror("Array dimension must be specified"); }
+    | direct_declarator '(' parameter_list ')'
+      {
+          /* Phase 6 placeholder, Phase 3 needs name */
+          /* $1 contains attributes including the name from the nested direct_declarator */
+          /* Parameters $3 not used yet */
+          $$ = $1; /* Propagate the attributes containing the name */
+          /* Add parameter processing in Phase 6 */
+      }
+    | direct_declarator '(' identifier_list_opt ')'
+      {
+          /* Phase 6 placeholder, Phase 3 needs name */
+          /* $1 contains attributes including the name */
+          /* Parameters $3 not used yet */
+          $$ = $1; /* Propagate the attributes containing the name */
+          /* Add parameter processing in Phase 6 */
+      }
     ;
 
-// Add pointer rule later if needed: pointer : '*' | pointer '*' ;
+/* Parameters deferred */
+parameter_list : parameter_declaration { /* delete $1; Phase 6 */ } | parameter_list ',' parameter_declaration { /* delete $1; delete $3; Phase 6 */ } ;
+parameter_declaration : type_specifier declarator { delete $1; delete $2; /* Phase 6 */ } ;
+identifier_list_opt : /* empty */ | identifier_list ;
+identifier_list : IDENTIFIER { delete[] $1; } | identifier_list ',' IDENTIFIER { delete[] $3; } ;
 
-parameter_list
-    : parameter_declaration
-    | parameter_list ',' parameter_declaration
+initializer /* Phase 3: Handles expression */
+    : assignment_expression { $$ = $1; }
     ;
-
-parameter_declaration
-    : type_specifier declarator // Simplified for now
-        { /* Phase 6: Process parameter type and name */
-          // Use logic similar to init_declarator to insert param into function scope
-          delete $1; // Cleanup TypeInfo from type_specifier
-          // Declarator action $2 manages its own name string ($2.name)
-        }
-    ;
-
-identifier_list_opt
-    : /* empty */
-    | identifier_list
-    ;
-    
-identifier_list
-    : IDENTIFIER                { delete[] $1; } // Cleanup sval
-    | identifier_list ',' IDENTIFIER { delete[] $3; } // Cleanup sval
-    ;
-
-initializer
-    : assignment_expression      { /* Phase 3: Evaluate initializer */ }
-    ;
-
 
 /* 3. Statements */
 statement
-    : compound_statement       { /* Phase 2+: Add nextlist handling */ }
-    | expression_statement     { /* Phase 3+: Add nextlist handling */ }
-    | selection_statement      { /* Phase 4+: Add nextlist handling */ }
-    | iteration_statement      { /* Phase 5+: Add nextlist handling */ }
-    | jump_statement           { /* Phase 6: No nextlist needed for return */ }
+    : compound_statement
+    | expression_statement
+    | selection_statement
+    | iteration_statement
+    | jump_statement
     ;
 
-compound_statement // Represents BEGIN/END block
-    : BEGIN_TOKEN
-        { /* Phase 2: Enter a new scope */
-          begin_scope();
-          std::cout << "Debug: Entered scope level " << std::endl; // Optional debug
-        }
+compound_statement /* Phase 2: Scope handling */
+    : BEGIN_TOKEN { begin_scope(); std::cout << "Debug: Entered scope" << std::endl;}
       block_item_list_opt
-      END_TOKEN
-        { /* Phase 2: Exit the current scope */
-          std::cout << "Debug: Exiting scope level " << std::endl; // Optional debug
-          end_scope();
-        }
+      END_TOKEN { std::cout << "Debug: Exiting scope" << std::endl; end_scope(); }
     ;
 
-block_item_list_opt
-    : /* empty */
-    | block_item_list
-    ;
-    
-block_item_list
-    : block_item
-    | block_item_list block_item
-    ;
-
-block_item
-    : declaration // Declarations within a block
-    | statement   // Statements within a block
-    ;
+block_item_list_opt : /* empty */ | block_item_list ;
+block_item_list : block_item | block_item_list block_item ;
+block_item : declaration | statement ;
 
 expression_statement
-    : ';'                      { /* Empty statement */ }
-    | expression ';'           { /* Evaluated for side effects */ }
+    : ';' { std::cout << "Debug: Empty statement" << std::endl; }
+    | expression ';' { /* Phase 3: Cleanup attributes */ std::cout << "Debug: Expression statement" << std::endl; if ($1) { delete $1; } }
     ;
 
-selection_statement // IF / IF-ELSE
-    : IF '(' expression ')' statement %prec IFX
-        { /* Phase 4: Backpatching for if */ }
-    | IF '(' expression ')' statement ELSE statement 
-        { /* Phase 4: Backpatching for if-else */ }
+selection_statement /* Phase 4: Backpatching */
+    : IF '(' expression ')' statement %prec IFX { if($3) delete $3; /* Phase 4 */ }
+    | IF '(' expression ')' statement ELSE statement { if($3) delete $3; /* Phase 4 */ }
     ;
 
-iteration_statement // FOR loop
-    : FOR '(' expression_opt ';' expression_opt ';' expression_opt ')' statement 
-        { /* Phase 5: Backpatching for for */ }
+iteration_statement /* Phase 5: Backpatching */
+    : FOR '(' expression_opt ';' expression_opt ';' expression_opt ')' statement
+      { /* Clean up expression results */ if($3) delete $3; if($5) delete $5; if($7) delete $7; /* Phase 5 */ }
     ;
 
-expression_opt
-    : /* empty */
-    | expression 
+expression_opt /* Now has type expr_attr_ptr */
+    : /* empty */ { $$ = nullptr; } /* Return null pointer */
+    | expression  { $$ = $1; }      /* Propagate */
     ;
 
-jump_statement // RETURN
-    : RETURN ';'               { /* Phase 6: emit RETURN */ }
-    | RETURN expression ';'    { /* Phase 6: emit RETURN value */ }
+jump_statement /* Phase 6: Return TAC */
+    : RETURN ';' { /* Phase 6 */ }
+    | RETURN expression ';' { if($2) delete $2; /* Phase 6 */ }
     ;
 
-/* 4. External Definitions (Top Level) */
-translation_unit
-    : external_declaration
-        { /* Start of program */ }
-    | translation_unit external_declaration
-    ;
+/* 4. External Definitions */
+translation_unit : external_declaration | translation_unit external_declaration ;
+external_declaration : function_definition | declaration ;
 
-external_declaration
-    : function_definition
-    | declaration           // Global declarations
-    ;
-
-function_definition
-    : type_specifier declarator 
-        {
-            // 1. Create function symbol before entering compound statement
+function_definition /* Phase 2: Basic handling */
+    : type_specifier declarator
+        { /* Action before compound statement */
             std::string func_name = $2->name;
-            
-            // Create function type with return type
             TypeInfo* func_type = new TypeInfo(TYPE_FUNCTION);
-            func_type->return_type = $1; // Store return type from type_specifier
-            
-            // Create the function symbol
-            Symbol* func_sym = new Symbol(func_name, func_type);
-            
-            // Insert into global scope
-            if (!insert_symbol(func_name, func_type)) {
-                yyerror(("Redeclaration of function '" + func_name + "'").c_str());
-            } else {
-                std::cout << "Debug: Inserted function symbol '" << func_name 
-                          << "' with return type '" << $1->toString() << "'" << std::endl;
-            }
-            
-            // Remember the function symbol for nested scope attachment
-            // Store in a global variable to avoid pass-through attributes
+            func_type->return_type = $1; /* $1 is TypeInfo* */
+            Symbol* func_sym = insert_symbol(func_name, func_type);
+            if (func_sym == nullptr) { yyerror(("Redeclaration of function '" + func_name + "'").c_str()); }
+            else { std::cout << "Debug: Inserted function symbol '" << func_name << "'" << std::endl; }
             current_function = func_sym;
+            delete $2; /* Cleanup declarator attributes */
         }
-      compound_statement
-        {
-            // 4. Link function symbol to its scope
-            if (current_function && current_function->nested_table == nullptr) {
-                // Get the scope we're about to exit
-                current_function->nested_table = current_symbol_table;
-            }
-            
-            current_function = nullptr; // Reset for next function
+      compound_statement /* Enters/exits function body scope */
+        { /* Action after compound statement */
+            if (current_function && current_function->nested_table == nullptr) { /* Link scope? */ }
+            current_function = nullptr;
         }
     ;
 
 %%
 
-FILE* lex_output = nullptr; 
+/* External variable from lexer */
+FILE* lex_output = nullptr;
 
-// Error Handling Function (using C++ iostream)
+/* Error Handling */
 void yyerror(const char* s) {
-    std::cerr << "Syntax Error: " << s << " near '" << (yytext ? yytext : "EOF") 
+    std::cerr << "Syntax Error: " << s << " near '" << (yytext ? yytext : "EOF")
               << "' at line " << line_no << std::endl;
-    // Exit on first syntax error for simplicity in Phase 1
-    exit(EXIT_FAILURE); 
+    exit(EXIT_FAILURE);
 }
 
-// --- REMOVED OLD C function implementations ---
-
-/* Main Function (using C++ translator) */
+/* Main Function (from Phase 2) */
 int main(int argc, char** argv) {
-    if (argc < 2) {
-        std::cerr << "Usage: " << argv[0] << " <input_file>" << std::endl;
-        return 1;
-    }
-
-    // --- Input File Handling ---
+    if (argc < 2) { std::cerr << "Usage: " << argv[0] << " <input_file>" << std::endl; return 1; }
     yyin = fopen(argv[1], "r");
-    if (!yyin) {
-        std::cerr << "Error: Cannot open input file: " << argv[1] << std::endl;
-        return 1;
-    }
+    if (!yyin) { std::cerr << "Error: Cannot open input file: " << argv[1] << std::endl; return 1; }
 
-    // --- Lexer Output File Handling (Add this block) ---
-    char lex_filename[FILENAME_MAX]; // Use FILENAME_MAX for buffer size
-    strncpy(lex_filename, argv[1], FILENAME_MAX - 10); // Copy base name safely
-    lex_filename[FILENAME_MAX - 10] = '\0'; // Ensure null termination
-    strcat(lex_filename, ".lex.out");       // Append suffix
-
+    /* Lexer Output File Handling */
+    char lex_filename[FILENAME_MAX];
+    strncpy(lex_filename, argv[1], FILENAME_MAX - 10); lex_filename[FILENAME_MAX - 10] = '\0';
+    strcat(lex_filename, ".lex.out");
     lex_output = fopen(lex_filename, "w");
-    if (!lex_output) {
-        // Non-fatal: Warn but continue if lex output can't be created
-        std::cerr << "Warning: Cannot create lexer output file: " << lex_filename << std::endl;
-        lex_output = nullptr; // Ensure it's null if open failed
-    } else {
-        std::cout << "Lexical analysis output will be written to " << lex_filename << std::endl;
-        fprintf(lex_output, "LEXICAL ANALYSIS FOR FILE: %s\n---\n", argv[1]); // Add header
-    }
-    // --- End Lexer Output File Handling ---
+    if (!lex_output) { std::cerr << "Warning: Cannot create lexer output file: " << lex_filename << std::endl; }
+    else { std::cout << "Lexical analysis output will be written to " << lex_filename << std::endl; fprintf(lex_output, "LEXICAL ANALYSIS FOR FILE: %s\n---\n", argv[1]); }
 
-
-    // --- Initialization & Parsing ---
-    initialize_symbol_tables(); 
+    /* Initialization & Parsing */
+    initialize_symbol_tables();
     std::cout << "Starting parse for file: " << argv[1] << std::endl;
-    int parse_result = yyparse(); 
-    fclose(yyin); // Close input file
+    int parse_result = yyparse();
+    fclose(yyin);
 
-    // --- Post-Parsing Output ---
+    /* Post-Parsing Output */
     if (parse_result == 0) {
         std::cout << "Parsing completed successfully." << std::endl;
-        print_symbol_table(global_symbol_table); 
-        print_quads();           
-    } else {
-        std::cerr << "Parsing failed." << std::endl;
-    }
+        print_symbol_table(global_symbol_table);
+        print_quads(); /* Phase 3: Should now contain expression quads */
+    } else { std::cerr << "Parsing failed." << std::endl; }
 
-    // --- Cleanup ---
-    cleanup_translator(); // Cleanup translator resources
+    /* Cleanup */
+    cleanup_translator();
+    if (lex_output != nullptr) { fprintf(lex_output, "\n---\nEND OF LEXICAL ANALYSIS\n"); fclose(lex_output); }
 
-    // --- Close Lexer Output File (Add this block) ---
-    if (lex_output != nullptr) {
-        fprintf(lex_output, "\n---\nEND OF LEXICAL ANALYSIS\n");
-        fclose(lex_output);
-        lex_output = nullptr; // Good practice
-    }
-    // --- End Close Lexer Output File ---
-
-    return parse_result; 
+    return parse_result;
 }
