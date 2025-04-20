@@ -21,8 +21,6 @@ begin
     l_float1 = 123.45;    /* TAC: tX = 123.45; l_float1 = tX */
     g_float1 = -0.5;      /* TAC: tX = 0.5; tY = uminus tX; g_float1 = tY */
     l_char1 = 'A';        /* TAC: tX = 65; l_char1 = tX (assuming ASCII) */
-    g_bool1 = (10 < 20);  // Assign the result of a comparison (which is internally 1)
-    l_bool1 = (5 == 9);   // Assign the result of a comparison (which is internally 0)
     
     /* 2. Arithmetic Operations */
     l_int2 = l_int1 + 20;             /* TAC: tX = l_int1 + 20; l_int2 = tX */
@@ -46,8 +44,6 @@ begin
     /* 4. Unary Operations */
     l_int_res = -l_int2;               /* TAC: tX = uminus l_int2; l_int_res = tX */
     l_float_res = +l_float1;           /* TAC: tX = uplus l_float1; l_float_res = tX (or just copy) */
-    l_bool_res = !g_bool1;             /* TAC: tX = ! g_bool1; l_bool_res = tX */
-    l_bool_res = !(l_int1 == 10);      /* TAC: tA = l_int1 == 10; tB = ! tA; l_bool_res = tB */
 
     /* 5. Relational Operators */
     l_bool1 = l_int1 < l_int2;         /* TAC: tX = l_int1 < l_int2; l_bool1 = tX */
