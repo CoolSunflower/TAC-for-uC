@@ -7,13 +7,13 @@ FLEX = flex
 
 # Flags
 # CXXFLAGS: Flags for C++ compilation (-g for debug symbols)
-CXXFLAGS = -std=c++11 -g
+CXXFLAGS = -std=c++11 -g 
 # LDFLAGS: Flags for linking (usually empty unless specifying library paths)
 LDFLAGS =
 # LDLIBS: Libraries to link against (-lfl for flex library)
 LDLIBS = -lfl
 # BISONFLAGS: Flags for Bison (-d to generate the header file)
-BISONFLAGS = -d
+BISONFLAGS = -d -Wcounterexamples
 # FLEXFLAGS: Flags for Flex (none needed currently)
 FLEXFLAGS =
 
