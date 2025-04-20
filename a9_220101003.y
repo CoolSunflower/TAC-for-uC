@@ -103,7 +103,7 @@ void yyerror(const char* s);
 /* --- End Phase 3 --- */
 
 /* --- Phase 4: %type for markers and statements --- */
-%type <list_ptr> M // Markers return BackpatchList*
+%type <list_ptr> M N // Markers return BackpatchList*
 %type <stmt_attr_ptr> statement compound_statement selection_statement iteration_statement
 %type <stmt_attr_ptr> expression_statement jump_statement block_item block_item_list
 %type <stmt_attr_ptr> block_item_list_opt
@@ -134,6 +134,13 @@ void yyerror(const char* s);
 M   : /* empty */
         { $$ = new BackpatchList(makelist(get_next_quad_index()));
           std::cout << "Debug: Marker M created list pointing to next quad " << get_next_quad_index() << std::endl; }
+    ;
+N   : /* empty */
+        {
+            $$ = new BackpatchList(makelist(get_next_quad_index()));
+            emit(OP_GOTO, ""); // Emit GOTO with empty target
+            std::cout << "Debug: Marker N created list pointing to GOTO at quad " << get_next_quad_index()-1 << std::endl;
+        }
     ;
 /* --- End Phase 4 --- */
 
@@ -793,91 +800,86 @@ expression_statement /* Type: stmt_attr_ptr */
 
 /* --- Phase 4 Step 6: IF / IF-ELSE Logic --- */
 selection_statement /* Type: stmt_attr_ptr */
-    : IF '(' expression ')' M statement %prec IFX
-        {
+    : IF '(' expression ')' M statement N %prec IFX
+        { // Action for IF (...) M S1 N %prec IFX
             ExprAttributes* expr_attr = $3;
             BackpatchList* marker_M_list = $5; // List with quad index for start of 'then' statement
             StmtAttributes* stmt_attr = $6;
+            BackpatchList* marker_N_list = $7; // List from the (unneeded) GOTO emitted by N
 
-            if (!expr_attr) { yyerror("Invalid condition for IF"); $$ = new StmtAttributes(); delete marker_M_list; delete stmt_attr;}
-            else if (!expr_attr->type || expr_attr->type->base != TYPE_BOOL) {
-                 yyerror("IF condition must be boolean"); delete expr_attr; delete marker_M_list; delete stmt_attr; $$ = new StmtAttributes();
-            } else {
-                 backpatch(*expr_attr->truelist, marker_M_list->front()); // If true, jump to statement's start
+            if (!expr_attr) { yyerror("Invalid IF cond"); $$ = new StmtAttributes(); delete marker_M_list; delete stmt_attr; delete marker_N_list;} // Cleanup N
+            else if (!expr_attr->type || expr_attr->type->base != TYPE_BOOL) { yyerror("IF cond bool"); delete expr_attr; delete marker_M_list; delete stmt_attr; delete marker_N_list; $$ = new StmtAttributes(); } // Cleanup N
+            else {
+                backpatch(*expr_attr->truelist, marker_M_list->front());
+                $$ = new StmtAttributes();
+                // The nextlist for the simple IF is the merge of the expression's falselist
+                // and the statement's nextlist. The GOTO emitted by N is irrelevant here.
+                if (stmt_attr && stmt_attr->nextlist) {
+                    $$->nextlist = new BackpatchList(mergelist(*expr_attr->falselist, *stmt_attr->nextlist));
+                    delete stmt_attr->nextlist; // stmt_attr's list merged
+                } else {
+                    $$->nextlist = expr_attr->falselist; // Only falselist if statement has no nextlist
+                    expr_attr->falselist = nullptr;      // Avoid double delete
+                }
+                std::cout << "Debug: Simple IF statement processed. Nextlist created." << std::endl;
 
-                 $$ = new StmtAttributes();
-                 // The nextlist for the IF statement consists of:
-                 // 1. Jumps from the expression's falselist (skipping the statement)
-                 // 2. Jumps from the statement's nextlist (exiting the statement)
-                 if (stmt_attr && stmt_attr->nextlist) {
-                     $$->nextlist = new BackpatchList(mergelist(*expr_attr->falselist, *stmt_attr->nextlist));
-                     delete stmt_attr->nextlist; // stmt_attr's list merged, delete pointer
-                 } else {
-                     $$->nextlist = expr_attr->falselist; // Only falselist if statement has no nextlist
-                     expr_attr->falselist = nullptr;      // Avoid double delete, ownership transferred
-                 }
-                 std::cout << "Debug: IF statement processed. Nextlist created." << std::endl;
-
-                 // Cleanup
-                 delete expr_attr->truelist;
-                 delete expr_attr->falselist; // Might be null if transferred
-                 delete expr_attr;
-                 delete marker_M_list;
-                 delete stmt_attr; // stmt_attr->nextlist already handled
+                // Cleanup
+                delete expr_attr->truelist;
+                delete expr_attr->falselist; // Might be null if transferred
+                delete expr_attr;
+                delete marker_M_list;
+                delete marker_N_list; // <<< Delete the list from the unnecessary N marker
+                delete stmt_attr; // stmt_attr->nextlist already handled
             }
         }
-    | IF '(' expression ')' M statement ELSE M statement
-        { // Start of if-else action block
+    | IF '(' expression ')' M statement N ELSE M statement
+        { // Action for IF ... M S1 N ELSE M S2
             ExprAttributes* expr_attr = $3;
-            BackpatchList* m1_list = $5; // Before 'then' statement
-            StmtAttributes* s1_attr = $6; // 'then' statement attributes
+            BackpatchList* m1_list = $5;    // M before 'then'
+            StmtAttributes* s1_attr = $6;   // 'then' statement
+            BackpatchList* n_list = $7;     // List from N marker's GOTO
+            // $8 is ELSE
+            BackpatchList* m2_list = $9;    // M before 'else'
+            StmtAttributes* s2_attr = $10;  // 'else' statement
 
-            // --- Phase 4 Fix: Emit GOTO directly, create jump_list ---
-            BackpatchList* jump_list = new BackpatchList(makelist(get_next_quad_index()));
-            emit(OP_GOTO, ""); // GOTO to jump over 'else' part
-            std::cout << "Debug: Emitted GOTO over else at quad " << get_next_quad_index()-1 << std::endl;
-            // --- End Fix ---
-
-            BackpatchList* m2_list = $8; // Before 'else' statement ($7 is ELSE now)
-            StmtAttributes* s2_attr = $9; // 'else' statement attributes ($8 is M now)
-
-            if (!expr_attr) { yyerror("Invalid IF-ELSE cond"); $$ = new StmtAttributes(); delete m1_list; delete s1_attr; delete jump_list; delete m2_list; delete s2_attr;} // Fix: Added cleanup on error
-            else if (!expr_attr->type || expr_attr->type->base != TYPE_BOOL) { yyerror("IF-ELSE cond bool"); delete expr_attr; delete m1_list; delete s1_attr; delete jump_list; delete m2_list; delete s2_attr; $$ = new StmtAttributes(); } // Fix: Added cleanup on error
+            // --- Keep the error checking and backpatching/merging logic ---
+            // --- from the version that correctly used these indices ---
+            if (!expr_attr) { yyerror("Invalid IF-ELSE cond"); $$ = new StmtAttributes(); delete m1_list; delete s1_attr; delete n_list; delete m2_list; delete s2_attr;}
+            else if (!expr_attr->type || expr_attr->type->base != TYPE_BOOL) { yyerror("IF-ELSE cond bool"); delete expr_attr; delete m1_list; delete s1_attr; delete n_list; delete m2_list; delete s2_attr; $$ = new StmtAttributes(); }
             else {
                 backpatch(*expr_attr->truelist, m1_list->front());
-                backpatch(*expr_attr->falselist, m2_list->front()); // Backpatch false list to M before else stmt
+                backpatch(*expr_attr->falselist, m2_list->front()); // Backpatch false list to M before else ($9)
 
                 $$ = new StmtAttributes();
                 BackpatchList temp_list1, temp_list2;
 
-                // --- Phase 4 Fix: Merge using jump_list instead of N's list ---
-                // Combine stmt1->nextlist and the new jump_list
+                // Combine stmt1->nextlist ($6) and the n_list ($7)
                 if (s1_attr && s1_attr->nextlist) {
-                    temp_list1 = mergelist(*s1_attr->nextlist, *jump_list);
-                    delete s1_attr->nextlist; // Cleanup original list from s1_attr
+                    temp_list1 = mergelist(*s1_attr->nextlist, *n_list);
+                    delete s1_attr->nextlist;
                 } else {
-                    temp_list1 = *jump_list; // Only the jump over else
+                    temp_list1 = *n_list; // Only the jump over else
                 }
-                // --- End Fix ---
 
-                // Combine result with stmt2->nextlist
+                // Combine result with stmt2->nextlist ($10)
                 if (s2_attr && s2_attr->nextlist) {
                     temp_list2 = mergelist(temp_list1, *s2_attr->nextlist);
-                    delete s2_attr->nextlist; // Cleanup original list from s2_attr
+                    delete s2_attr->nextlist;
                 } else {
-                    temp_list2 = temp_list1; // Only jumps from 'then' and the direct GOTO
+                    temp_list2 = temp_list1;
                 }
-                $$->nextlist = new BackpatchList(temp_list2); // Assign final merged list
+                $$->nextlist = new BackpatchList(temp_list2);
 
                 std::cout << "Debug: IF-ELSE statement processed. Nextlist created." << std::endl;
 
-                // Cleanup (Ensure jump_list is deleted)
+                // Cleanup
                 delete expr_attr->truelist; delete expr_attr->falselist; delete expr_attr;
-                delete m1_list; delete s1_attr; // s1_attr->nextlist already deleted or was null
-                delete jump_list; // <<< Delete the directly created jump_list
-                delete m2_list; delete s2_attr; // s2_attr->nextlist already deleted or was null
+                delete m1_list; delete s1_attr; // s1_attr->nextlist deleted above
+                delete n_list; // <<< Delete list created by N marker
+                delete m2_list; delete s2_attr; // s2_attr->nextlist deleted above
             }
         }
+
 
     ;
 
