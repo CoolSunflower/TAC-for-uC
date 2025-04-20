@@ -8,6 +8,7 @@
 #include <vector>
 #include <list>
 #include <sstream> /* For converting constants to string */
+#include <utility> /* For std::swap */
 
 /* External declarations */
 extern int yylex();
@@ -18,8 +19,6 @@ extern FILE* lex_output; /* Keep for logging */
 
 /* Function Prototypes */
 void yyerror(const char* s);
-
-/* --- NO BINARY_OP_ACTION Macro Here --- */
 
 %}
 
@@ -35,13 +34,31 @@ void yyerror(const char* s);
         ~DeclaratorAttributes() {}
     };
 
-    /* Structure for expression attributes (Phase 3) */
+    /* Structure for expression attributes (Phase 4 Update) */
     struct ExprAttributes {
         Symbol* place = nullptr;
         TypeInfo* type = nullptr;
+        BackpatchList* truelist = nullptr; // --- Phase 4 ---
+        BackpatchList* falselist = nullptr;// --- Phase 4 ---
+
         ExprAttributes() {}
-         ~ExprAttributes() { /* Assume type owned elsewhere */ }
+        ~ExprAttributes() {
+            // Cleanup handled explicitly in parser rules where ownership ends
+            // delete truelist; // NO!
+            // delete falselist; // NO!
+         }
     };
+
+    /* Structure for Statement Attributes (Phase 4) */
+    struct StmtAttributes {
+        BackpatchList* nextlist = nullptr;
+        StmtAttributes() {}
+        ~StmtAttributes() {
+             // Cleanup handled explicitly in parser rules
+             // delete nextlist; // NO!
+        }
+    };
+
 }
 
 /* Bison Declarations */
@@ -58,6 +75,7 @@ void yyerror(const char* s);
 
     DeclaratorAttributes* decl_attr_ptr; /* Phase 2 */
     ExprAttributes* expr_attr_ptr;       /* Phase 3 */
+    StmtAttributes* stmt_attr_ptr;       /* Phase 4 */
 };
 
 /* Token Types */
@@ -84,13 +102,18 @@ void yyerror(const char* s);
 %type <expr_attr_ptr> expression_opt
 /* --- End Phase 3 --- */
 
+/* --- Phase 4: %type for markers and statements --- */
+%type <list_ptr> M N // Markers return BackpatchList*
+%type <stmt_attr_ptr> statement compound_statement selection_statement iteration_statement
+%type <stmt_attr_ptr> expression_statement jump_statement block_item block_item_list
+%type <stmt_attr_ptr> block_item_list_opt
+/* --- End Phase 4 --- */
 
 /* Operator Precedence and Associativity */
 %right '='
 %left OR
 %left AND
-%left EQ NE
-%left '<' '>' LE GE
+%nonassoc '<' '>' LE GE EQ NE /* Boolean comparison */
 %left '+' '-'
 %left '*' '/' '%'
 %right '!' /* Logical NOT (unary) */
@@ -104,6 +127,19 @@ void yyerror(const char* s);
 %start translation_unit
 
 %%
+
+/* Grammar Rules (Phase 4 - Complete) */
+
+/* --- Phase 4: Marker Non-terminals --- */
+M   : /* empty */
+        { $$ = new BackpatchList(makelist(get_next_quad_index()));
+          std::cout << "Debug: Marker M created list pointing to next quad " << get_next_quad_index() << std::endl; }
+    ;
+N   : /* empty */
+        { $$ = new BackpatchList(makelist(get_next_quad_index())); emit(OP_GOTO, "");
+          std::cout << "Debug: Marker N created list pointing to GOTO at quad " << get_next_quad_index()-1 << std::endl; }
+    ;
+/* --- End Phase 4 --- */
 
 /* Grammar Rules (Phase 3 - Expression TAC - CORRECTED v4 - NO MACRO) */
 

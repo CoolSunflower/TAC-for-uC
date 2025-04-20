@@ -16,15 +16,26 @@ typedef enum {
     OP_PLUS, OP_MINUS, OP_MULT, OP_DIV, OP_MOD,
     // Unary Arithmetic
     OP_UMINUS, OP_UPLUS,
-    // Relational Operators
+    // Relational Operators (Result -> Temp Bool - Phase 3 Style)
     OP_LT, OP_GT, OP_LE, OP_GE, OP_EQ, OP_NE,
-    // Logical Operators
+    // Logical Operators (Result -> Temp Bool - Phase 3 Style)
     OP_AND, OP_OR, OP_NOT,
     // Assignment
     OP_ASSIGN,
     // Jumps
-    OP_GOTO, OP_IF_FALSE,
-    OP_IF_TRUE,
+    OP_GOTO,
+    OP_IF_FALSE, // if (arg1 == false) goto result
+    OP_IF_TRUE,  // if (arg1 == true) goto result
+
+    // --- Phase 4: Add Specific Conditional Jumps ---
+    OP_IF_LT,    // if (arg1 < arg2) goto result
+    OP_IF_GT,    // if (arg1 > arg2) goto result
+    OP_IF_LE,    // if (arg1 <= arg2) goto result
+    OP_IF_GE,    // if (arg1 >= arg2) goto result
+    OP_IF_EQ,    // if (arg1 == arg2) goto result
+    OP_IF_NE,    // if (arg1 != arg2) goto result
+    // --- End Phase 4 ---
+
     // Function Call / Return
     OP_PARAM,
     OP_CALL,
@@ -33,10 +44,13 @@ typedef enum {
     OP_ADDR,
     OP_DEREF_ASSIGN,
     OP_ASSIGN_DEREF,
+    // Array Access
     OP_ARRAY_ACCESS,
     OP_ARRAY_ASSIGN,
+    // Conversions
     OP_INT2FLOAT,
     OP_FLOAT2INT,
+    // Markers
     OP_FUNC_BEGIN,
     OP_FUNC_END
 } op_code;
@@ -95,7 +109,7 @@ struct Quad {
     op_code op;
     std::string arg1;
     std::string arg2;
-    std::string result;
+    std::string result; // Target label for jumps, result name otherwise
 
     Quad(op_code o, std::string r, std::string a1 = "", std::string a2 = "") : 
         op(o), arg1(a1), arg2(a2), result(r) {}

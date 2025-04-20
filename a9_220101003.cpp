@@ -113,9 +113,11 @@ std::string TypeInfo::toString() const {
     }
 }
 
-// --- Quad Implementation ---
+
+// --- Quad Implementation (Modified) ---
 std::string opcode_to_string(op_code op) {
     switch(op) {
+        // Keep existing cases from paste-5.txt
         case OP_PLUS: return "+"; case OP_MINUS: return "-"; case OP_MULT: return "*";
         case OP_DIV: return "/"; case OP_MOD: return "%"; case OP_UMINUS: return "uminus";
         case OP_UPLUS: return "uplus"; case OP_LT: return "<"; case OP_GT: return ">";
@@ -126,46 +128,62 @@ std::string opcode_to_string(op_code op) {
         case OP_PARAM: return "param"; case OP_CALL: return "call"; case OP_RETURN: return "return";
         case OP_ADDR: return "&"; case OP_DEREF_ASSIGN: return "*="; case OP_ASSIGN_DEREF: return "=*";
         case OP_ARRAY_ACCESS: return "[]"; case OP_ARRAY_ASSIGN: return "[]=";
-        case OP_INT2FLOAT: return "int2float";
-        case OP_FLOAT2INT: return "float2int";
+        case OP_INT2FLOAT: return "int2float"; case OP_FLOAT2INT: return "float2int";
         case OP_FUNC_BEGIN: return "func_begin"; case OP_FUNC_END: return "func_end";
+        // --- Phase 4: Add strings for new opcodes ---
+        case OP_IF_LT: return "if<"; case OP_IF_GT: return "if>";
+        case OP_IF_LE: return "if<="; case OP_IF_GE: return "if>=";
+        case OP_IF_EQ: return "if=="; case OP_IF_NE: return "if!=";
+        // --- End Phase 4 ---
         default: return "op_unknown";
     }
 }
 
+
 std::string Quad::toString() const {
     std::string op_str = opcode_to_string(op);
-    std::string res_str = result;
+    std::string res_str = result; // Usually target for jumps
     std::string a1_str = arg1;
     std::string a2_str = arg2;
 
-    // Basic formatting
-    if (op >= OP_PLUS && op <= OP_MOD || op >= OP_LT && op <= OP_NE || op == OP_AND || op == OP_OR) {
-        return res_str + " = " + a1_str + " " + op_str + " " + a2_str;
-    } else if (op == OP_UMINUS || op == OP_UPLUS || op == OP_NOT || op == OP_ASSIGN || op == OP_ADDR || op == OP_ASSIGN_DEREF ||
-               op == OP_INT2FLOAT || op == OP_FLOAT2INT) { // Phase 3: Include conversion ops
-        return res_str + " = " + op_str + " " + a1_str;
-    } else if (op == OP_GOTO) {
-        return op_str + " " + res_str;
-    } else if (op == OP_IF_FALSE || op == OP_IF_TRUE) {
-        return op_str + " " + a1_str + " goto " + res_str;
-    } else if (op == OP_PARAM) {
-         return op_str + " " + res_str;
-    } else if (op == OP_CALL) {
-        return (res_str.empty() ? "" : res_str + " = ") + op_str + " " + a1_str + ", " + a2_str;
-    } else if (op == OP_RETURN) {
-        return op_str + (res_str.empty() ? "" : " " + res_str);
-    } else if (op == OP_FUNC_BEGIN || op == OP_FUNC_END) {
-        return op_str + " " + res_str;
-    } else if (op == OP_DEREF_ASSIGN) {
-        return "*" + res_str + " = " + a1_str;
-    } else if (op == OP_ARRAY_ACCESS) {
-        return res_str + " = " + a1_str + "[" + a2_str + "]";
-    } else if (op == OP_ARRAY_ASSIGN) {
-        return a1_str + "[" + a2_str + "] = " + res_str;
+    // Regular binary/unary assignments (including conversions)
+    if ((op >= OP_PLUS && op <= OP_MOD) || (op >= OP_LT && op <= OP_NE) || (op == OP_AND) || (op == OP_OR) ||
+        (op == OP_UMINUS) || (op == OP_UPLUS) || (op == OP_NOT) || (op == OP_ASSIGN) ||
+        (op == OP_ADDR) || (op == OP_ASSIGN_DEREF) || (op == OP_INT2FLOAT) || (op == OP_FLOAT2INT) )
+    {
+         // Note: Phase 3 style OP_LT etc. generate assignments, handled here.
+         // Phase 4 style OP_IF_LT etc. are handled below.
+        if (a2_str.empty()) { // Unary or Assign
+            return res_str + " = " + op_str + " " + a1_str;
+        } else { // Binary
+             return res_str + " = " + a1_str + " " + op_str + " " + a2_str;
+        }
     }
+    // Gotos
+    else if (op == OP_GOTO) {
+        return op_str + " " + res_str;
+    }
+    // Conditional Jumps (Value-based)
+    else if (op == OP_IF_FALSE || op == OP_IF_TRUE) {
+        return op_str + " " + a1_str + " goto " + res_str;
+    }
+    // --- Phase 4: Conditional Jumps (Comparison-based) ---
+    else if (op >= OP_IF_LT && op <= OP_IF_NE) {
+         // Format: if arg1 OP arg2 goto result
+         return "if " + a1_str + " " + op_str.substr(2) + " " + a2_str + " goto " + res_str;
+    }
+    // --- End Phase 4 ---
+    // Function related
+    else if (op == OP_PARAM) { return op_str + " " + res_str; }
+    else if (op == OP_CALL) { return (res_str.empty() ? "" : res_str + " = ") + op_str + " " + a1_str + ", " + a2_str; }
+    else if (op == OP_RETURN) { return op_str + (res_str.empty() ? "" : " " + res_str); }
+    else if (op == OP_FUNC_BEGIN || op == OP_FUNC_END) { return op_str + " " + res_str; }
+    // Pointer/Array
+    else if (op == OP_DEREF_ASSIGN) { return "*" + res_str + " = " + a1_str; }
+    else if (op == OP_ARRAY_ACCESS) { return res_str + " = " + a1_str + "[" + a2_str + "]"; }
+    else if (op == OP_ARRAY_ASSIGN) { return a1_str + "[" + a2_str + "] = " + res_str; }
 
-    // Default fallback
+    // Fallback (shouldn't normally be reached if all ops handled)
     return op_str + ", " + res_str + ", " + a1_str + ", " + a2_str;
 }
 
@@ -302,11 +320,6 @@ Symbol* new_temp(TypeInfo* type) {
     current_symbol_table->insert(temp_name, temp_sym); // Add temp to current scope
     return temp_sym;
 }
-
-// --- Placeholder Implementations ---
-
-// --- Phase 3: Implement typecheck ---
-// In a9_220101003.cpp
 
 TypeInfo* typecheck(TypeInfo* t1, TypeInfo* t2, op_code op) {
     if (!t1) return nullptr; // First operand must exist for most ops
