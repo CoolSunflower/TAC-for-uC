@@ -8,7 +8,7 @@ bool globalBool;
 integer globalArray[10];
 
 /* Multiple declarations in one statement */
-integer var1, var2, var3;
+integer var1 = 3, var2, var3 = 4;
 
 /* Function with parameters and local variables */
 integer testFunction(integer param1, float param2)

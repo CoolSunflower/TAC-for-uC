@@ -26,10 +26,14 @@ LEXICAL ANALYSIS FOR FILE: test_phase2.mc
 10: COMMENT_END
 11: INTEGER         [integer]
 11: IDENTIFIER      [var1]
+11: PUNCTUATOR      [=]
+11: INT_CONSTANT    [3]
 11: PUNCTUATOR      [,]
 11: IDENTIFIER      [var2]
 11: PUNCTUATOR      [,]
 11: IDENTIFIER      [var3]
+11: PUNCTUATOR      [=]
+11: INT_CONSTANT    [4]
 11: PUNCTUATOR      [;]
 13: COMMENT_START   [/*]
 13: COMMENT_END
