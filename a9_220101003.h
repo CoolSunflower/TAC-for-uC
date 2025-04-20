@@ -6,18 +6,16 @@
 #include <map>
 
 // 1. FORWARD DECLARATIONS
-// Declare all structured types that reference each other first
 struct Symbol;
 struct TypeInfo;
 class SymbolTable;
 
 // 2. BASIC TYPE DEFINITIONS (enums)
-// Enum for Three Address Code Opcodes
 typedef enum {
     // Binary Arithmetic
     OP_PLUS, OP_MINUS, OP_MULT, OP_DIV, OP_MOD,
     // Unary Arithmetic
-    OP_UMINUS, OP_UPLUS, 
+    OP_UMINUS, OP_UPLUS,
     // Relational Operators
     OP_LT, OP_GT, OP_LE, OP_GE, OP_EQ, OP_NE,
     // Logical Operators
@@ -35,10 +33,10 @@ typedef enum {
     OP_ADDR,
     OP_DEREF_ASSIGN,
     OP_ASSIGN_DEREF,
-    // Array Access
     OP_ARRAY_ACCESS,
     OP_ARRAY_ASSIGN,
-    // Markers
+    OP_INT2FLOAT,
+    OP_FLOAT2INT,
     OP_FUNC_BEGIN,
     OP_FUNC_END
 } op_code;
@@ -50,7 +48,6 @@ typedef enum {
 } base_type;
 
 // 3. COMPLETE TYPE DEFINITIONS (in dependency order)
-// First define TypeInfo which doesn't depend on Symbol
 struct TypeInfo {
     base_type base = TYPE_UNKNOWN;
     int width = 0;
@@ -63,7 +60,6 @@ struct TypeInfo {
     std::string toString() const;
 };
 
-// Then define Symbol which depends on TypeInfo
 struct Symbol {
     std::string name;
     TypeInfo* type = nullptr;
@@ -72,12 +68,11 @@ struct Symbol {
     int offset = 0;
     SymbolTable* nested_table = nullptr;
     bool is_temp = false;
-    std::vector<int> pending_dims; // Temporarily store array dimensions
+    std::vector<int> pending_dims;
 
     Symbol(std::string n = "", TypeInfo* t = nullptr) : name(n), type(t), nested_table(nullptr) {}
 };
 
-// Now define SymbolTable which depends on Symbol
 class SymbolTable {
 public:
     std::map<std::string, Symbol*> symbols;
@@ -91,8 +86,8 @@ public:
     bool insert(const std::string& name, Symbol* symbol);
 };
 
-extern std::vector<Symbol*> pending_type_symbols; // Symbols waiting for type assignment
-extern Symbol* current_function; // Tracks function being processed
+extern std::vector<Symbol*> pending_type_symbols;
+extern Symbol* current_function;
 void apply_pending_types(TypeInfo* type);
 
 // 4. QUAD AND BACKPATCH DEFINITIONS
@@ -118,7 +113,6 @@ extern int next_quad_index;
 extern int temp_counter;
 
 // 6. FUNCTION PROTOTYPES
-// Now all the types they use are properly defined
 void emit(op_code op, std::string result, std::string arg1 = "", std::string arg2 = "");
 void print_quads();
 int get_next_quad_index();
@@ -132,7 +126,7 @@ void print_symbol_table(SymbolTable* table_to_print = nullptr, int level = 0);
 
 Symbol* new_temp(TypeInfo* type);
 
-TypeInfo* typecheck(TypeInfo* t1, TypeInfo* t2, op_code op); 
+TypeInfo* typecheck(TypeInfo* t1, TypeInfo* t2, op_code op);
 Symbol* convert_type(Symbol* s, TypeInfo* target_type);
 
 BackpatchList makelist(int quad_index);

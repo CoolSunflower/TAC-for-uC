@@ -88,25 +88,27 @@ std::string TypeInfo::toString() const {
         case TYPE_FLOAT: return "float";
         case TYPE_POINTER: return (ptr_type ? ptr_type->toString() + "*" : "pointer(unknown)");
         case TYPE_ARRAY: {
-            // CRITICAL FIX: Show element type and dimensions
-            std::string elem_type = "unknown";
-            if (ptr_type) {
-                elem_type = ptr_type->toString();
-            }
-            
+            std::string elem_type = ptr_type ? ptr_type->toString() : "unknown";
             std::string dims_str = "";
             if (!dims.empty()) {
                 dims_str = "[";
                 for (size_t i = 0; i < dims.size(); ++i) {
-                    if (i > 0) dims_str += ",";
-                    dims_str += std::to_string(dims[i]);
+                    dims_str += (i > 0 ? "," : "") + std::to_string(dims[i]);
                 }
                 dims_str += "]";
             }
-            
             return "array<" + elem_type + ">" + dims_str;
         }
-        case TYPE_FUNCTION: return "function";
+        case TYPE_FUNCTION: { 
+            std::string ret = return_type ? return_type->toString() : "unknown_ret";
+            std::string params = "(";
+            for(size_t i = 0; i < param_types.size(); ++i) {
+                params += (i > 0 ? ", " : "");
+                params += param_types[i] ? param_types[i]->toString() : "unknown_param";
+            }
+            params += ")";
+            return ret + params; // Example: "integer(integer, float)"
+        }
         default: return "unknown";
     }
 }
@@ -114,7 +116,7 @@ std::string TypeInfo::toString() const {
 // --- Quad Implementation ---
 std::string opcode_to_string(op_code op) {
     switch(op) {
-        case OP_PLUS: return "+"; case OP_MINUS: return "-"; case OP_MULT: return "*"; 
+        case OP_PLUS: return "+"; case OP_MINUS: return "-"; case OP_MULT: return "*";
         case OP_DIV: return "/"; case OP_MOD: return "%"; case OP_UMINUS: return "uminus";
         case OP_UPLUS: return "uplus"; case OP_LT: return "<"; case OP_GT: return ">";
         case OP_LE: return "<="; case OP_GE: return ">="; case OP_EQ: return "==";
@@ -124,6 +126,8 @@ std::string opcode_to_string(op_code op) {
         case OP_PARAM: return "param"; case OP_CALL: return "call"; case OP_RETURN: return "return";
         case OP_ADDR: return "&"; case OP_DEREF_ASSIGN: return "*="; case OP_ASSIGN_DEREF: return "=*";
         case OP_ARRAY_ACCESS: return "[]"; case OP_ARRAY_ASSIGN: return "[]=";
+        case OP_INT2FLOAT: return "int2float";
+        case OP_FLOAT2INT: return "float2int";
         case OP_FUNC_BEGIN: return "func_begin"; case OP_FUNC_END: return "func_end";
         default: return "op_unknown";
     }
@@ -135,35 +139,36 @@ std::string Quad::toString() const {
     std::string a1_str = arg1;
     std::string a2_str = arg2;
 
-    // Basic formatting - adjust as needed
+    // Basic formatting
     if (op >= OP_PLUS && op <= OP_MOD || op >= OP_LT && op <= OP_NE || op == OP_AND || op == OP_OR) {
         return res_str + " = " + a1_str + " " + op_str + " " + a2_str;
-    } else if (op == OP_UMINUS || op == OP_UPLUS || op == OP_NOT || op == OP_ASSIGN || op == OP_ADDR || op == OP_ASSIGN_DEREF) {
+    } else if (op == OP_UMINUS || op == OP_UPLUS || op == OP_NOT || op == OP_ASSIGN || op == OP_ADDR || op == OP_ASSIGN_DEREF ||
+               op == OP_INT2FLOAT || op == OP_FLOAT2INT) { // Phase 3: Include conversion ops
         return res_str + " = " + op_str + " " + a1_str;
     } else if (op == OP_GOTO) {
-        return op_str + " " + res_str; // Result holds the label/target quad index
+        return op_str + " " + res_str;
     } else if (op == OP_IF_FALSE || op == OP_IF_TRUE) {
-        return op_str + " " + a1_str + " goto " + res_str; // Arg1 is condition, Result is target
+        return op_str + " " + a1_str + " goto " + res_str;
     } else if (op == OP_PARAM) {
-         return op_str + " " + res_str; // Result is the parameter name/temp
+         return op_str + " " + res_str;
     } else if (op == OP_CALL) {
-        return (res_str.empty() ? "" : res_str + " = ") + op_str + " " + a1_str + ", " + a2_str; // a1=func, a2=nparams
+        return (res_str.empty() ? "" : res_str + " = ") + op_str + " " + a1_str + ", " + a2_str;
     } else if (op == OP_RETURN) {
         return op_str + (res_str.empty() ? "" : " " + res_str);
     } else if (op == OP_FUNC_BEGIN || op == OP_FUNC_END) {
-        return op_str + " " + res_str; // Result might hold function name
+        return op_str + " " + res_str;
     } else if (op == OP_DEREF_ASSIGN) {
         return "*" + res_str + " = " + a1_str;
-    }
-     else if (op == OP_ARRAY_ACCESS) {
+    } else if (op == OP_ARRAY_ACCESS) {
         return res_str + " = " + a1_str + "[" + a2_str + "]";
     } else if (op == OP_ARRAY_ASSIGN) {
         return a1_str + "[" + a2_str + "] = " + res_str;
     }
-    
+
     // Default fallback
-    return op_str + ", " + res_str + ", " + a1_str + ", " + a2_str; 
+    return op_str + ", " + res_str + ", " + a1_str + ", " + a2_str;
 }
+
 
 
 // --- Translator Function Implementations ---
@@ -278,37 +283,140 @@ void end_scope() {
     }
 }
 
-// Basic placeholder for temporary generation
 Symbol* new_temp(TypeInfo* type) {
+    if (!type) { // Cannot create temp without a type
+        std::cerr << "Error: Cannot create temporary variable without a type." << std::endl;
+        // In a real compiler, might try a default type or throw an exception
+        type = new TypeInfo(TYPE_UNKNOWN); // Create a fallback unknown type
+    }
     std::string temp_name = "t" + std::to_string(temp_counter++);
-    Symbol* temp_sym = new Symbol(temp_name, type);
-    temp_sym->is_temp = true; 
-    // Insert the temporary into the *current* symbol table so it can be looked up if needed
-    // Temporaries usually don't clash with user variables, but tracking them is good
-    if (!current_symbol_table) initialize_symbol_tables(); 
-    current_symbol_table->insert(temp_name, temp_sym); 
-    
-    // Important: The Symbol* returned usually holds the *name* which is used in Quads.
-    // We return the Symbol* itself as it contains name, type, etc.
-    return temp_sym; 
+    // Important: Create a *copy* of the type for the temporary if the passed type
+    // might be deleted later (e.g., if it came from typecheck). If the type
+    // is guaranteed to persist (e.g., a global basic type), copying isn't needed.
+    // Let's assume for now the caller manages the lifecycle of the passed 'type'.
+    Symbol* temp_sym = new Symbol(temp_name, type); // Assign the type directly
+    temp_sym->is_temp = true;
+    temp_sym->size = type->width; // Set size for the temporary
+
+    if (!current_symbol_table) initialize_symbol_tables();
+    current_symbol_table->insert(temp_name, temp_sym); // Add temp to current scope
+    return temp_sym;
 }
 
 // --- Placeholder Implementations ---
 
+// --- Phase 3: Implement typecheck ---
 TypeInfo* typecheck(TypeInfo* t1, TypeInfo* t2, op_code op) {
-    // Phase 1: No actual type checking logic needed yet.
-    // In later phases, this would check compatibility based on op.
-    // std::cout << "Debug: typecheck called (Phase 1 stub)" << std::endl;
-    if (t1) return t1; // Just return one of the types for now
-    if (t2) return t2;
-    return new TypeInfo(TYPE_UNKNOWN); // Fallback
+    if (!t1) return nullptr; // First operand must exist for most ops
+
+    bool is_numeric1 = (t1->base == TYPE_INTEGER || t1->base == TYPE_FLOAT);
+    bool is_numeric2 = t2 && (t2->base == TYPE_INTEGER || t2->base == TYPE_FLOAT);
+    bool is_bool1 = t1->base == TYPE_BOOL;
+    // bool is_bool2 = t2 && t2->base == TYPE_BOOL; // Needed for AND/OR later
+
+    switch (op) {
+        // Binary Arithmetic
+        case OP_PLUS: case OP_MINUS: case OP_MULT: case OP_DIV: case OP_MOD:
+            if (!is_numeric1 || !is_numeric2) {
+                std::cerr << "Type Error: Arithmetic operator requires numeric operands." << std::endl;
+                return nullptr;
+            }
+            // Special check for MOD - often only for integers
+            if (op == OP_MOD && (t1->base != TYPE_INTEGER || t2->base != TYPE_INTEGER)) {
+                 std::cerr << "Type Error: '%' operator requires integer operands." << std::endl;
+                 return nullptr;
+            }
+            // Promotion rule: If either is float, result is float
+            if (t1->base == TYPE_FLOAT || t2->base == TYPE_FLOAT)
+                return new TypeInfo(TYPE_FLOAT, 4); // Caller must manage this new TypeInfo
+            else
+                return new TypeInfo(TYPE_INTEGER, 4); // Caller must manage this new TypeInfo
+
+        // Relational Operators
+        case OP_LT: case OP_GT: case OP_LE: case OP_GE: case OP_EQ: case OP_NE:
+            if (!is_numeric1 || !is_numeric2) {
+                std::cerr << "Type Error: Relational operator requires numeric operands." << std::endl;
+                return nullptr;
+            }
+            return new TypeInfo(TYPE_BOOL, 1); // Result is always bool, caller manages new TypeInfo
+
+        // Logical NOT
+        case OP_NOT:
+            if (!is_bool1 || t2 != nullptr) { // Must be unary, operand must be bool
+                 std::cerr << "Type Error: '!' operator requires a boolean operand." << std::endl;
+                 return nullptr;
+            }
+            return new TypeInfo(TYPE_BOOL, 1); // Result is bool, caller manages new TypeInfo
+
+        // Assignment
+        case OP_ASSIGN:
+            if (!t2) return nullptr; // RHS must exist
+            // Check compatibility (Allow same type, or int assigned to float)
+            if (t1->base == t2->base) return t1; // Compatible: return LHS type (no new object)
+            if (t1->base == TYPE_FLOAT && t2->base == TYPE_INTEGER) return t1; // Compatible: return LHS type
+            // Add other allowed assignments based on Micro C spec (e.g., char to int?)
+            std::cerr << "Type Error: Incompatible types for assignment." << std::endl;
+            return nullptr; // Incompatible assignment
+
+        // Unary Minus/Plus
+        case OP_UMINUS: case OP_UPLUS:
+            if (!is_numeric1 || t2 != nullptr) { // Must be unary, operand must be numeric
+                std::cerr << "Type Error: Unary +/- requires a numeric operand." << std::endl;
+                return nullptr;
+            }
+            return t1; // Result type matches operand (no new object)
+
+        // Add cases for AND, OR if handling non-short-circuit in Phase 3
+        // case OP_AND: case OP_OR:
+        //     if (!is_bool1 || !is_bool2) return nullptr;
+        //     return new TypeInfo(TYPE_BOOL, 1);
+
+        default:
+            std::cerr << "Type Error: Operation " << opcode_to_string(op) << " not type-checked or invalid." << std::endl;
+            return nullptr;
+    }
 }
 
+// --- Phase 3: Implement convert_type ---
 Symbol* convert_type(Symbol* s, TypeInfo* target_type) {
-    // Phase 1: No type conversion logic needed yet.
-    // std::cout << "Debug: convert_type called (Phase 1 stub)" << std::endl;
-    // This would emit conversion quads (e.g., INT2FLOAT) later.
-    return s; // Return original symbol for now
+    if (!s || !s->type || !target_type) {
+        std::cerr << "Error: Cannot perform type conversion with missing type information." << std::endl;
+        return s; // Return original if info is missing
+    }
+
+    TypeInfo* current_type = s->type;
+
+    // No conversion needed if types are already the same
+    if (current_type->base == target_type->base) {
+        return s;
+    }
+
+    // Allowed Conversion: Integer -> Float
+    if (current_type->base == TYPE_INTEGER && target_type->base == TYPE_FLOAT) {
+        std::cout << "Debug: Converting " << s->name << " from integer to float." << std::endl;
+        TypeInfo* float_type = new TypeInfo(TYPE_FLOAT, 4); // Create the target type instance
+        Symbol* temp = new_temp(float_type); // Create temp with the correct type
+        emit(OP_INT2FLOAT, temp->name, s->name);
+        return temp;
+    }
+
+    // Allowed Conversion: Float -> Integer
+    /*
+    if (current_type->base == TYPE_FLOAT && target_type->base == TYPE_INTEGER) {
+        std::cout << "Debug: Converting " << s->name << " from float to integer (truncation)." << std::endl;
+        TypeInfo* int_type = new TypeInfo(TYPE_INTEGER, 4);
+        Symbol* temp = new_temp(int_type);
+        emit(OP_FLOAT2INT, temp->name, s->name);
+        return temp;
+    }
+    */
+
+    // If no specific conversion rule matches, it's likely a type error
+    // The caller (parser action after typecheck) should handle this mismatch.
+    // We return the original symbol here, indicating conversion wasn't performed.
+    std::cerr << "Warning: No conversion rule found from " << current_type->toString()
+              << " to " << target_type->toString() << " for symbol " << s->name << std::endl;
+    return s;
 }
 
 BackpatchList makelist(int quad_index) {
@@ -331,74 +439,75 @@ void backpatch(BackpatchList& list, int target_quad_index) {
     std::string target_str = std::to_string(target_quad_index);
     for (int index : list) {
         if (index >= 0 && index < quad_list.size()) {
-            // Assuming the 'result' field holds the jump target for GOTO/IF_FALSE etc.
-            quad_list[index].result = target_str; 
+            quad_list[index].result = target_str;
+        } else {
+             std::cerr << "Warning: Invalid quad index " << index << " during backpatching." << std::endl;
         }
     }
     list.clear(); // Clear the list after backpatching
 }
 
-
 void print_symbol_table(SymbolTable* table_to_print, int level) {
-    if (!table_to_print) {
-        table_to_print = global_symbol_table;
-    }
-    
+    /* Already defined correctly in paste-3.txt */
+    if (!table_to_print) { table_to_print = global_symbol_table; }
     if (!table_to_print) return;
 
-    // Indentation for scope level
-    std::string indent(level * 4, ' '); 
+    std::string indent(level * 4, ' ');
+    if (level == 0) { std::cout << "\n--- Symbol Table ---" << std::endl; }
 
-    // Print table header with scope level
-    if (level == 0) {
-        std::cout << "\n--- Symbol Table ---" << std::endl;
-    }
-    
-    std::cout << indent << std::left << std::setw(20) << "Name" 
-              << std::setw(30) << "Type" 
-              << std::setw(8) << "Size" 
-              << std::setw(8) << "Offset" 
+    std::cout << indent << std::left << std::setw(20) << "Name"
+              << std::setw(30) << "Type"
+              << std::setw(8) << "Size"
+              << std::setw(8) << "Offset"
               << "Scope Level: " << table_to_print->scope_level << std::endl;
-    std::cout << indent << std::string(66, '-') << std::endl;
+    std::cout << indent << std::string(76, '-') << std::endl; // Adjusted width
 
-    // Print all symbols in this table
     for (const auto& [name, symbol] : table_to_print->symbols) {
         if (!symbol) continue;
-        std::cout << indent 
+        std::cout << indent
                   << std::left << std::setw(20) << symbol->name
                   << std::setw(30) << (symbol->type ? symbol->type->toString() : "N/A")
                   << std::setw(8) << symbol->size
                   << std::setw(8) << symbol->offset
                   << std::endl;
 
-        // CRITICAL FIX: Recursively print nested tables for functions/blocks
+        // Print nested table if associated *directly* with this symbol (e.g., function)
         if (symbol->nested_table) {
-            std::cout << indent << "Nested scope for " << symbol->name << ":" << std::endl;
+            std::cout << indent << "  Nested scope for '" << symbol->name << "':" << std::endl;
             print_symbol_table(symbol->nested_table, level + 1);
         }
     }
-
-    // CRITICAL FIX: After printing all symbols, check for child scopes
-    // This handles block scopes not associated with a specific symbol
-    if (table_to_print->child_scopes.size() > 0) {
-        for (auto* child : table_to_print->child_scopes) {
-            std::cout << indent << "Block scope:" << std::endl;
-            print_symbol_table(child, level + 1);
+     // Separately iterate through child scopes (blocks not tied to a specific function symbol's nested_table field)
+     // Avoid double printing if already printed via symbol->nested_table
+    for (auto* child : table_to_print->child_scopes) {
+        bool already_printed = false;
+        for (const auto& [name, symbol] : table_to_print->symbols) {
+             if (symbol && symbol->nested_table == child) {
+                 already_printed = true;
+                 break;
+             }
+        }
+        if (!already_printed) {
+             std::cout << indent << "  Block scope:" << std::endl;
+             print_symbol_table(child, level + 1);
         }
     }
-    
-    if (level == 0) {
-        std::cout << "--------------------" << std::endl;
-    }
+
+
+    if (level == 0) { std::cout << "--------------------" << std::endl; }
 }
 
 // Cleanup function definition
 void cleanup_translator() {
-    // Perform cleanup related to the translator module
-    // Proper cleanup might involve recursively deleting nested tables if they are owned
-    delete global_symbol_table; 
-    global_symbol_table = nullptr; 
+    // Need a more robust recursive deletion for symbol tables & symbols
+    // Simple delete global_symbol_table might leak nested scopes/symbols
+    delete global_symbol_table; // Placeholder - leaks memory
+    global_symbol_table = nullptr;
     current_symbol_table = nullptr;
     current_function = nullptr;
-    std::cout << "Translator resources cleaned up." << std::endl;
+    quad_list.clear();
+    pending_type_symbols.clear();
+    next_quad_index = 0;
+    temp_counter = 0;
+    std::cout << "Translator resources cleaned up (basic)." << std::endl;
 }
