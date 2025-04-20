@@ -883,10 +883,89 @@ selection_statement /* Type: stmt_attr_ptr */
 
     ;
 
-iteration_statement /* Type: stmt_attr_ptr */
-    // --- Actions to be added in Phase 5 ---
-    : FOR '(' expression_opt ';' expression_opt ';' expression_opt ')' statement
-      { /* Clean up expression results */ if($3) delete $3; if($5) delete $5; if($7) delete $7; delete $9; $$ = new StmtAttributes(); /* Placeholder */ }
+iteration_statement
+    : FOR '(' expression_opt ';' 
+           M                     // M1: Condition location
+           expression_opt ';' 
+           M                     // M2: Increment location
+           expression_opt 
+           ')'
+           M                     // M3: Body location
+           statement
+      {
+          // Extract attributes
+          ExprAttributes* init_expr = $3;
+          BackpatchList* cond_marker = $5;    // M1
+          ExprAttributes* cond_expr = $6;
+          BackpatchList* incr_marker = $8;    // M2
+          ExprAttributes* incr_expr = $9;
+          BackpatchList* body_marker = $11;   // M3
+          StmtAttributes* body_stmt = $12;
+          
+          std::cout << "Debug: Processing FOR loop" << std::endl;
+          
+          // Create result attributes
+          $$ = new StmtAttributes();
+          
+          // 1. Process condition
+          if (cond_expr && cond_expr->type && cond_expr->type->base == TYPE_BOOL) {
+              // Condition's falselist becomes the loop's exit point
+              if (cond_expr->falselist) {
+                  $$->nextlist = cond_expr->falselist;
+                  cond_expr->falselist = nullptr; // Avoid double free
+                  std::cout << "Debug: FOR loop exit point from condition falselist" << std::endl;
+              } else {
+                  $$->nextlist = new BackpatchList();
+              }
+          } else {
+              std::cout << "Debug: FOR loop with no/invalid condition" << std::endl;
+              $$->nextlist = new BackpatchList();
+          }
+          
+          // 2. CRITICAL FIX: Insert jump to condition at end of increment section
+          // We need to manually insert a quad that jumps to condition between the
+          // increment code and the body code
+          
+          // Calculate position to insert the jump (between increment and body)
+          int body_start = body_marker->front();
+          
+          // Create a new GOTO quad to jump back to condition
+          Quad jump_to_cond(OP_GOTO, std::to_string(cond_marker->front()));
+          
+          // Insert this quad just before the body code starts
+          quad_list.insert(quad_list.begin() + body_start, jump_to_cond);
+          
+          // Adjust next_quad_index to account for the insertion
+          next_quad_index++;
+          
+          // *** CRITICAL FIX: Backpatch condition truelist to body+1 (after the inserted jump) ***
+          if (cond_expr && cond_expr->truelist) {
+              backpatch(*cond_expr->truelist, body_start + 1);
+              std::cout << "Debug: Backpatched condition truelist to body at " 
+                        << (body_start + 1) << " (after inserted jump)" << std::endl;
+          }
+          
+          // 3. Link body to increment
+          if (body_stmt && body_stmt->nextlist) {
+              backpatch(*body_stmt->nextlist, incr_marker->front());
+              std::cout << "Debug: Backpatched body nextlist to increment" << std::endl;
+          } else {
+              emit(OP_GOTO, std::to_string(incr_marker->front()));
+              std::cout << "Debug: Emitted explicit jump from body to increment" << std::endl;
+          }
+          
+          // Cleanup
+          if (init_expr) delete init_expr;
+          if (cond_expr) {
+              if (cond_expr->truelist) delete cond_expr->truelist;
+              delete cond_expr;
+          }
+          delete cond_marker;
+          if (incr_expr) delete incr_expr;
+          delete incr_marker;
+          delete body_marker;
+          if (body_stmt) delete body_stmt;
+      }
     ;
 
 expression_opt /* Type: expr_attr_ptr */
