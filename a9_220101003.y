@@ -225,31 +225,31 @@ unary_expression
     : postfix_expression { $$ = $1; } /* Propagation */
     | unary_operator unary_expression %prec UMINUS
       {
-        /* Phase 3: Handle unary operators */
         op_code op = (op_code)$1;
         ExprAttributes* operand_attr = $2;
-
-        if (!operand_attr) {
-            yyerror("Invalid operand for unary operator");
-            $$ = nullptr;
-        } else {
-            TypeInfo* temp_result_base_type = typecheck(operand_attr->type, nullptr, op);
-            if (!temp_result_base_type) {
-                 yyerror("Invalid type for unary operator");
-                 delete operand_attr;
-                 $$ = nullptr;
-            } else {
-                 Symbol* operand_place = operand_attr->place;
-                 Symbol* result_temp = new_temp(temp_result_base_type);
-
-                 emit(op, result_temp->name, operand_place->name);
-
-                 $$ = new ExprAttributes();
-                 $$->place = result_temp;
-                 $$->type = result_temp->type;
-
-                 std::cout << "Debug: Unary Op " << opcode_to_string(op) << " -> " << result_temp->name << std::endl;
-                 delete operand_attr;
+        if (!operand_attr) { yyerror("Invalid operand for unary operator"); $$ = nullptr; }
+        else {
+            // --- Phase 4: Handle '!' ---
+            if (op == OP_NOT) {
+                if (!operand_attr->type || operand_attr->type->base != TYPE_BOOL) {
+                    yyerror("Operand for '!' must be boolean"); delete operand_attr; $$ = nullptr;
+                } else {
+                    // Swap true and false lists
+                    $$ = operand_attr; // Take ownership
+                    std::swap($$->truelist, $$->falselist);
+                    std::cout << "Debug: Logical NOT applied by swapping lists" << std::endl;
+                }
+            } else { // Handle arithmetic unary ops (+, -) as in Phase 3
+                TypeInfo* temp_result_base_type = typecheck(operand_attr->type, nullptr, op);
+                if (!temp_result_base_type) { yyerror("Invalid type for unary operator"); delete operand_attr; $$ = nullptr; }
+                else {
+                     Symbol* operand_place = operand_attr->place;
+                     Symbol* result_temp = new_temp(temp_result_base_type);
+                     emit(op, result_temp->name, operand_place->name);
+                     $$ = new ExprAttributes(); $$->place = result_temp; $$->type = result_temp->type; /* No lists */
+                     std::cout << "Debug: Unary Op " << opcode_to_string(op) << " -> " << result_temp->name << std::endl;
+                     delete operand_attr;
+                }
             }
         }
       }
@@ -417,264 +417,149 @@ additive_expression
 /* Skip SHL/SHR */
 
 relational_expression
-    : additive_expression { $$ = $1; }
-    | relational_expression '<' additive_expression
-      { /* Phase 3: Action for < operator */
-        ExprAttributes* left_attr = $1;
-        ExprAttributes* right_attr = $3;
-        if (!left_attr || !right_attr) {
-            yyerror("Invalid operand(s) for binary operator '<'");
-            delete left_attr; delete right_attr;
-            $$ = nullptr;
-        } else {
-            TypeInfo* temp_result_base_type = typecheck(left_attr->type, right_attr->type, OP_LT);
-            if (!temp_result_base_type) {
-                yyerror("Type mismatch for binary operator '<'");
-                delete left_attr; delete right_attr;
-                $$ = nullptr;
-            } else {
-                /* Determine type for comparison (usually highest precision) */
-                TypeInfo* compare_type = (left_attr->type->base == TYPE_FLOAT || right_attr->type->base == TYPE_FLOAT) ?
-                                          new TypeInfo(TYPE_FLOAT, 8) : new TypeInfo(TYPE_INTEGER, 4); /* Use A9 float size */
-                Symbol* left_operand = convert_type(left_attr->place, compare_type);
-                Symbol* right_operand = convert_type(right_attr->place, compare_type);
-                delete compare_type; /* Clean up temporary compare_type */
-                if (left_operand != left_attr->place || right_operand != right_attr->place) { std::cout << "Debug: Conversion applied for " << opcode_to_string(OP_LT) << std::endl; }
-                Symbol* result_temp = new_temp(temp_result_base_type); /* Result is bool */
-                emit(OP_LT, result_temp->name, left_operand->name, right_operand->name);
-                $$ = new ExprAttributes();
-                $$->place = result_temp;
-                $$->type = result_temp->type;
-                std::cout << "Debug: Binary Op <: " << left_operand->name << ", " << right_operand->name << " -> " << result_temp->name << std::endl;
-                delete left_attr; delete right_attr;
-            }
-        }
+    : additive_expression { $$ = $1; } /* Only propagate if non-boolean */
+    | relational_expression '<' additive_expression { /* Phase 4: Action for < */
+        ExprAttributes* left_attr = $1; ExprAttributes* right_attr = $3;
+        if (!left_attr || !right_attr) { yyerror("Invalid op for '<'"); delete left_attr; delete right_attr; $$ = nullptr; }
+        else { TypeInfo* bool_type = typecheck(left_attr->type, right_attr->type, OP_IF_LT); /* Check compatibility */
+            if (!bool_type) { yyerror("Type mismatch for '<'"); delete left_attr; delete right_attr; $$ = nullptr; }
+            else { delete bool_type; /* Only needed for check */
+                TypeInfo* cmp_type = (left_attr->type->base == TYPE_FLOAT || right_attr->type->base == TYPE_FLOAT) ? new TypeInfo(TYPE_FLOAT, 8) : new TypeInfo(TYPE_INTEGER, 4);
+                Symbol* lop = convert_type(left_attr->place, cmp_type); Symbol* rop = convert_type(right_attr->place, cmp_type); delete cmp_type;
+                $$ = new ExprAttributes(); $$->type = new TypeInfo(TYPE_BOOL, 1);
+                $$->truelist = new BackpatchList(makelist(get_next_quad_index()));
+                $$->falselist = new BackpatchList(makelist(get_next_quad_index() + 1));
+                emit(OP_IF_LT, lop->name, rop->name, ""); /* Target in result */
+                emit(OP_GOTO, ""); /* Target in result */
+                std::cout << "Debug: Relational Op < generated jumps" << std::endl;
+                delete left_attr; delete right_attr; } }
       }
-    | relational_expression '>' additive_expression
-      { /* Phase 3: Action for > operator */
-        ExprAttributes* left_attr = $1;
-        ExprAttributes* right_attr = $3;
-        if (!left_attr || !right_attr) {
-            yyerror("Invalid operand(s) for binary operator '>'");
-            delete left_attr; delete right_attr;
-            $$ = nullptr;
-        } else {
-            TypeInfo* temp_result_base_type = typecheck(left_attr->type, right_attr->type, OP_GT);
-            if (!temp_result_base_type) {
-                yyerror("Type mismatch for binary operator '>'");
-                delete left_attr; delete right_attr;
-                $$ = nullptr;
-            } else {
-                TypeInfo* compare_type = (left_attr->type->base == TYPE_FLOAT || right_attr->type->base == TYPE_FLOAT) ?
-                                          new TypeInfo(TYPE_FLOAT, 8) : new TypeInfo(TYPE_INTEGER, 4);
-                Symbol* left_operand = convert_type(left_attr->place, compare_type);
-                Symbol* right_operand = convert_type(right_attr->place, compare_type);
-                delete compare_type;
-                if (left_operand != left_attr->place || right_operand != right_attr->place) { std::cout << "Debug: Conversion applied for " << opcode_to_string(OP_GT) << std::endl; }
-                Symbol* result_temp = new_temp(temp_result_base_type); /* Bool */
-                emit(OP_GT, result_temp->name, left_operand->name, right_operand->name);
-                $$ = new ExprAttributes();
-                $$->place = result_temp;
-                $$->type = result_temp->type;
-                std::cout << "Debug: Binary Op >: " << left_operand->name << ", " << right_operand->name << " -> " << result_temp->name << std::endl;
-                delete left_attr; delete right_attr;
-            }
-        }
+    | relational_expression '>' additive_expression { /* Phase 4: Action for > */
+        ExprAttributes* left_attr = $1; ExprAttributes* right_attr = $3;
+        if (!left_attr || !right_attr) { yyerror("Invalid op for '>'"); delete left_attr; delete right_attr; $$ = nullptr; }
+        else { TypeInfo* bool_type = typecheck(left_attr->type, right_attr->type, OP_IF_GT);
+            if (!bool_type) { yyerror("Type mismatch for '>'"); delete left_attr; delete right_attr; $$ = nullptr; }
+            else { delete bool_type;
+                TypeInfo* cmp_type = (left_attr->type->base == TYPE_FLOAT || right_attr->type->base == TYPE_FLOAT) ? new TypeInfo(TYPE_FLOAT, 8) : new TypeInfo(TYPE_INTEGER, 4);
+                Symbol* lop = convert_type(left_attr->place, cmp_type); Symbol* rop = convert_type(right_attr->place, cmp_type); delete cmp_type;
+                $$ = new ExprAttributes(); $$->type = new TypeInfo(TYPE_BOOL, 1);
+                $$->truelist = new BackpatchList(makelist(get_next_quad_index())); $$->falselist = new BackpatchList(makelist(get_next_quad_index() + 1));
+                emit(OP_IF_GT, lop->name, rop->name, ""); emit(OP_GOTO, "");
+                std::cout << "Debug: Relational Op > generated jumps" << std::endl;
+                delete left_attr; delete right_attr; } }
       }
-    | relational_expression LE additive_expression
-      { /* Phase 3: Action for <= operator */
-        ExprAttributes* left_attr = $1;
-        ExprAttributes* right_attr = $3;
-        if (!left_attr || !right_attr) {
-            yyerror("Invalid operand(s) for binary operator '<='");
-            delete left_attr; delete right_attr;
-            $$ = nullptr;
-        } else {
-            TypeInfo* temp_result_base_type = typecheck(left_attr->type, right_attr->type, OP_LE);
-            if (!temp_result_base_type) {
-                yyerror("Type mismatch for binary operator '<='");
-                delete left_attr; delete right_attr;
-                $$ = nullptr;
-            } else {
-                 TypeInfo* compare_type = (left_attr->type->base == TYPE_FLOAT || right_attr->type->base == TYPE_FLOAT) ?
-                                          new TypeInfo(TYPE_FLOAT, 8) : new TypeInfo(TYPE_INTEGER, 4);
-                Symbol* left_operand = convert_type(left_attr->place, compare_type);
-                Symbol* right_operand = convert_type(right_attr->place, compare_type);
-                delete compare_type;
-                if (left_operand != left_attr->place || right_operand != right_attr->place) { std::cout << "Debug: Conversion applied for " << opcode_to_string(OP_LE) << std::endl; }
-                Symbol* result_temp = new_temp(temp_result_base_type); /* Bool */
-                emit(OP_LE, result_temp->name, left_operand->name, right_operand->name);
-                $$ = new ExprAttributes();
-                $$->place = result_temp;
-                $$->type = result_temp->type;
-                std::cout << "Debug: Binary Op <=: " << left_operand->name << ", " << right_operand->name << " -> " << result_temp->name << std::endl;
-                delete left_attr; delete right_attr;
-            }
-        }
+    | relational_expression LE additive_expression { /* Phase 4: Action for <= */
+        ExprAttributes* left_attr = $1; ExprAttributes* right_attr = $3;
+        if (!left_attr || !right_attr) { yyerror("Invalid op for '<='"); delete left_attr; delete right_attr; $$ = nullptr; }
+        else { TypeInfo* bool_type = typecheck(left_attr->type, right_attr->type, OP_IF_LE);
+            if (!bool_type) { yyerror("Type mismatch for '<='"); delete left_attr; delete right_attr; $$ = nullptr; }
+            else { delete bool_type;
+                TypeInfo* cmp_type = (left_attr->type->base == TYPE_FLOAT || right_attr->type->base == TYPE_FLOAT) ? new TypeInfo(TYPE_FLOAT, 8) : new TypeInfo(TYPE_INTEGER, 4);
+                Symbol* lop = convert_type(left_attr->place, cmp_type); Symbol* rop = convert_type(right_attr->place, cmp_type); delete cmp_type;
+                $$ = new ExprAttributes(); $$->type = new TypeInfo(TYPE_BOOL, 1);
+                $$->truelist = new BackpatchList(makelist(get_next_quad_index())); $$->falselist = new BackpatchList(makelist(get_next_quad_index() + 1));
+                emit(OP_IF_LE, lop->name, rop->name, ""); emit(OP_GOTO, "");
+                std::cout << "Debug: Relational Op <= generated jumps" << std::endl;
+                delete left_attr; delete right_attr; } }
       }
-    | relational_expression GE additive_expression
-      { /* Phase 3: Action for >= operator */
-        ExprAttributes* left_attr = $1;
-        ExprAttributes* right_attr = $3;
-        if (!left_attr || !right_attr) {
-            yyerror("Invalid operand(s) for binary operator '>='");
-            delete left_attr; delete right_attr;
-            $$ = nullptr;
-        } else {
-            TypeInfo* temp_result_base_type = typecheck(left_attr->type, right_attr->type, OP_GE);
-            if (!temp_result_base_type) {
-                yyerror("Type mismatch for binary operator '>='");
-                delete left_attr; delete right_attr;
-                $$ = nullptr;
-            } else {
-                 TypeInfo* compare_type = (left_attr->type->base == TYPE_FLOAT || right_attr->type->base == TYPE_FLOAT) ?
-                                          new TypeInfo(TYPE_FLOAT, 8) : new TypeInfo(TYPE_INTEGER, 4);
-                Symbol* left_operand = convert_type(left_attr->place, compare_type);
-                Symbol* right_operand = convert_type(right_attr->place, compare_type);
-                delete compare_type;
-                if (left_operand != left_attr->place || right_operand != right_attr->place) { std::cout << "Debug: Conversion applied for " << opcode_to_string(OP_GE) << std::endl; }
-                Symbol* result_temp = new_temp(temp_result_base_type); /* Bool */
-                emit(OP_GE, result_temp->name, left_operand->name, right_operand->name);
-                $$ = new ExprAttributes();
-                $$->place = result_temp;
-                $$->type = result_temp->type;
-                std::cout << "Debug: Binary Op >=: " << left_operand->name << ", " << right_operand->name << " -> " << result_temp->name << std::endl;
-                delete left_attr; delete right_attr;
-            }
+    | relational_expression GE additive_expression { /* Phase 4: Action for >= */
+        ExprAttributes* left_attr = $1; ExprAttributes* right_attr = $3;
+        if (!left_attr || !right_attr) { 
+            yyerror("Invalid op for '>='"); 
+            delete left_attr; delete right_attr; 
+            $$ = nullptr; 
+        }else { 
+            TypeInfo* bool_type = typecheck(left_attr->type, right_attr->type, OP_IF_GE);
+            if (!bool_type) { 
+                yyerror("Type mismatch for '>='"); 
+                delete left_attr; delete right_attr; 
+                $$ = nullptr; 
+            }else { 
+                delete bool_type;
+                TypeInfo* cmp_type = (left_attr->type->base == TYPE_FLOAT || right_attr->type->base == TYPE_FLOAT) ? new TypeInfo(TYPE_FLOAT, 8) : new TypeInfo(TYPE_INTEGER, 4);
+                Symbol* lop = convert_type(left_attr->place, cmp_type); Symbol* rop = convert_type(right_attr->place, cmp_type); delete cmp_type;
+                $$ = new ExprAttributes(); $$->type = new TypeInfo(TYPE_BOOL, 1);
+                $$->truelist = new BackpatchList(makelist(get_next_quad_index())); $$->falselist = new BackpatchList(makelist(get_next_quad_index() + 1));
+                emit(OP_IF_GE, lop->name, rop->name, ""); emit(OP_GOTO, "");
+                std::cout << "Debug: Relational Op >= generated jumps" << std::endl;
+                delete left_attr; delete right_attr; 
+            } 
         }
       }
     ;
 
 equality_expression
-    : relational_expression { $$ = $1; }
-    | equality_expression EQ relational_expression
-      { /* Phase 3: Action for == operator */
-        ExprAttributes* left_attr = $1;
-        ExprAttributes* right_attr = $3;
-        if (!left_attr || !right_attr) {
-            yyerror("Invalid operand(s) for binary operator '=='");
-            delete left_attr; delete right_attr;
-            $$ = nullptr;
-        } else {
-            TypeInfo* temp_result_base_type = typecheck(left_attr->type, right_attr->type, OP_EQ);
-            if (!temp_result_base_type) {
-                yyerror("Type mismatch for binary operator '=='");
-                delete left_attr; delete right_attr;
-                $$ = nullptr;
-            } else {
-                 TypeInfo* compare_type = (left_attr->type->base == TYPE_FLOAT || right_attr->type->base == TYPE_FLOAT) ?
-                                          new TypeInfo(TYPE_FLOAT, 8) : new TypeInfo(TYPE_INTEGER, 4);
-                Symbol* left_operand = convert_type(left_attr->place, compare_type);
-                Symbol* right_operand = convert_type(right_attr->place, compare_type);
-                delete compare_type;
-                if (left_operand != left_attr->place || right_operand != right_attr->place) { std::cout << "Debug: Conversion applied for " << opcode_to_string(OP_EQ) << std::endl; }
-                Symbol* result_temp = new_temp(temp_result_base_type); /* Bool */
-                emit(OP_EQ, result_temp->name, left_operand->name, right_operand->name);
-                $$ = new ExprAttributes();
-                $$->place = result_temp;
-                $$->type = result_temp->type;
-                std::cout << "Debug: Binary Op ==: " << left_operand->name << ", " << right_operand->name << " -> " << result_temp->name << std::endl;
-                delete left_attr; delete right_attr;
-            }
-        }
+    : relational_expression { $$ = $1; } /* Propagation */
+    | equality_expression EQ relational_expression { /* Phase 4: Action for == */
+        ExprAttributes* left_attr = $1; ExprAttributes* right_attr = $3;
+        if (!left_attr || !right_attr) { yyerror("Invalid op for '=='"); delete left_attr; delete right_attr; $$ = nullptr; }
+        else { TypeInfo* bool_type = typecheck(left_attr->type, right_attr->type, OP_IF_EQ);
+            if (!bool_type) { yyerror("Type mismatch for '=='"); delete left_attr; delete right_attr; $$ = nullptr; }
+            else { delete bool_type;
+                TypeInfo* cmp_type = (left_attr->type->base == TYPE_FLOAT || right_attr->type->base == TYPE_FLOAT) ? new TypeInfo(TYPE_FLOAT, 8) : new TypeInfo(TYPE_INTEGER, 4);
+                Symbol* lop = convert_type(left_attr->place, cmp_type); Symbol* rop = convert_type(right_attr->place, cmp_type); delete cmp_type;
+                $$ = new ExprAttributes(); $$->type = new TypeInfo(TYPE_BOOL, 1);
+                $$->truelist = new BackpatchList(makelist(get_next_quad_index())); $$->falselist = new BackpatchList(makelist(get_next_quad_index() + 1));
+                emit(OP_IF_EQ, lop->name, rop->name, ""); emit(OP_GOTO, "");
+                std::cout << "Debug: Equality Op == generated jumps" << std::endl;
+                delete left_attr; delete right_attr; } }
       }
-    | equality_expression NE relational_expression
-      { /* Phase 3: Action for != operator */
-        ExprAttributes* left_attr = $1;
-        ExprAttributes* right_attr = $3;
-        if (!left_attr || !right_attr) {
-            yyerror("Invalid operand(s) for binary operator '!='");
-            delete left_attr; delete right_attr;
-            $$ = nullptr;
-        } else {
-            TypeInfo* temp_result_base_type = typecheck(left_attr->type, right_attr->type, OP_NE);
-            if (!temp_result_base_type) {
-                yyerror("Type mismatch for binary operator '!='");
-                delete left_attr; delete right_attr;
-                $$ = nullptr;
-            } else {
-                 TypeInfo* compare_type = (left_attr->type->base == TYPE_FLOAT || right_attr->type->base == TYPE_FLOAT) ?
-                                          new TypeInfo(TYPE_FLOAT, 8) : new TypeInfo(TYPE_INTEGER, 4);
-                Symbol* left_operand = convert_type(left_attr->place, compare_type);
-                Symbol* right_operand = convert_type(right_attr->place, compare_type);
-                delete compare_type;
-                if (left_operand != left_attr->place || right_operand != right_attr->place) { std::cout << "Debug: Conversion applied for " << opcode_to_string(OP_NE) << std::endl; }
-                Symbol* result_temp = new_temp(temp_result_base_type); /* Bool */
-                emit(OP_NE, result_temp->name, left_operand->name, right_operand->name);
-                $$ = new ExprAttributes();
-                $$->place = result_temp;
-                $$->type = result_temp->type;
-                std::cout << "Debug: Binary Op !=: " << left_operand->name << ", " << right_operand->name << " -> " << result_temp->name << std::endl;
-                delete left_attr; delete right_attr;
-            }
-        }
+    | equality_expression NE relational_expression { /* Phase 4: Action for != */
+        ExprAttributes* left_attr = $1; ExprAttributes* right_attr = $3;
+        if (!left_attr || !right_attr) { yyerror("Invalid op for '!='"); delete left_attr; delete right_attr; $$ = nullptr; }
+        else { TypeInfo* bool_type = typecheck(left_attr->type, right_attr->type, OP_IF_NE);
+            if (!bool_type) { yyerror("Type mismatch for '!='"); delete left_attr; delete right_attr; $$ = nullptr; }
+            else { delete bool_type;
+                TypeInfo* cmp_type = (left_attr->type->base == TYPE_FLOAT || right_attr->type->base == TYPE_FLOAT) ? new TypeInfo(TYPE_FLOAT, 8) : new TypeInfo(TYPE_INTEGER, 4);
+                Symbol* lop = convert_type(left_attr->place, cmp_type); Symbol* rop = convert_type(right_attr->place, cmp_type); delete cmp_type;
+                $$ = new ExprAttributes(); $$->type = new TypeInfo(TYPE_BOOL, 1);
+                $$->truelist = new BackpatchList(makelist(get_next_quad_index())); $$->falselist = new BackpatchList(makelist(get_next_quad_index() + 1));
+                emit(OP_IF_NE, lop->name, rop->name, ""); emit(OP_GOTO, "");
+                std::cout << "Debug: Equality Op != generated jumps" << std::endl;
+                delete left_attr; delete right_attr; } }
       }
     ;
 
 /* Skip bitwise &, | */
 
-logical_AND_expression /* Phase 3: Simple bool op */
-    : equality_expression { $$ = $1; }
-    | logical_AND_expression AND equality_expression
-      { /* Phase 3: Action for && operator */
-        ExprAttributes* left_attr = $1;
-        ExprAttributes* right_attr = $3;
-        if (!left_attr || !right_attr) {
-            yyerror("Invalid operand(s) for binary operator '&&'");
-            delete left_attr; delete right_attr;
-            $$ = nullptr;
-        } else {
-             /* Assuming typecheck handles bool requirement for OP_AND */
-            TypeInfo* temp_result_base_type = typecheck(left_attr->type, right_attr->type, OP_AND);
-            if (!temp_result_base_type) {
-                yyerror("Type mismatch for binary operator '&&'");
-                delete left_attr; delete right_attr;
-                $$ = nullptr;
-            } else {
-                /* No conversion needed if typecheck enforces bool */
-                Symbol* left_operand = left_attr->place;
-                Symbol* right_operand = right_attr->place;
-                Symbol* result_temp = new_temp(temp_result_base_type); /* Bool */
-                emit(OP_AND, result_temp->name, left_operand->name, right_operand->name);
-                $$ = new ExprAttributes();
-                $$->place = result_temp;
-                $$->type = result_temp->type;
-                std::cout << "Debug: Binary Op &&: " << left_operand->name << ", " << right_operand->name << " -> " << result_temp->name << std::endl;
-                delete left_attr; delete right_attr;
-            }
+logical_AND_expression
+    : equality_expression { $$ = $1; } /* Propagation */
+    | logical_AND_expression M AND equality_expression { /* Phase 4: Action for && */
+        ExprAttributes* left_attr = $1; ExprAttributes* right_attr = $4; BackpatchList* marker_list = $2;
+        if (!left_attr || !right_attr) { yyerror("Invalid op for '&&'"); delete left_attr; delete right_attr; delete marker_list; $$ = nullptr; }
+        else if (!left_attr->type || left_attr->type->base != TYPE_BOOL || !right_attr->type || right_attr->type->base != TYPE_BOOL) {
+             yyerror("Operands for '&&' must be boolean"); delete left_attr; delete right_attr; delete marker_list; $$ = nullptr; }
+        else {
+             backpatch(*left_attr->truelist, marker_list->front()); // Backpatch left's TRUE to start of right expr
+             $$ = new ExprAttributes(); $$->type = left_attr->type; // Result is boolean
+             $$->truelist = right_attr->truelist; right_attr->truelist = nullptr; // Transfer ownership of right's truelist
+             $$->falselist = new BackpatchList(mergelist(*left_attr->falselist, *right_attr->falselist)); // Merge falselists
+             std::cout << "Debug: Logical AND processed" << std::endl;
+             // Cleanup owned resources
+             delete left_attr->truelist; delete left_attr->falselist; delete left_attr;
+             delete right_attr->falselist; delete right_attr; // right's truelist was transferred
+             delete marker_list;
         }
       }
     ;
 
-logical_OR_expression /* Phase 3: Simple bool op */
-    : logical_AND_expression { $$ = $1; }
-    | logical_OR_expression OR logical_AND_expression
-      { /* Phase 3: Action for || operator */
-        ExprAttributes* left_attr = $1;
-        ExprAttributes* right_attr = $3;
-        if (!left_attr || !right_attr) {
-            yyerror("Invalid operand(s) for binary operator '||'");
-            delete left_attr; delete right_attr;
-            $$ = nullptr;
-        } else {
-             /* Assuming typecheck handles bool requirement for OP_OR */
-            TypeInfo* temp_result_base_type = typecheck(left_attr->type, right_attr->type, OP_OR);
-            if (!temp_result_base_type) {
-                yyerror("Type mismatch for binary operator '||'");
-                delete left_attr; delete right_attr;
-                $$ = nullptr;
-            } else {
-                /* No conversion needed if typecheck enforces bool */
-                Symbol* left_operand = left_attr->place;
-                Symbol* right_operand = right_attr->place;
-                Symbol* result_temp = new_temp(temp_result_base_type); /* Bool */
-                emit(OP_OR, result_temp->name, left_operand->name, right_operand->name);
-                $$ = new ExprAttributes();
-                $$->place = result_temp;
-                $$->type = result_temp->type;
-                std::cout << "Debug: Binary Op ||: " << left_operand->name << ", " << right_operand->name << " -> " << result_temp->name << std::endl;
-                delete left_attr; delete right_attr;
-            }
+logical_OR_expression
+    : logical_AND_expression { $$ = $1; } /* Propagation */
+    | logical_OR_expression M OR logical_AND_expression { /* Phase 4: Action for || */
+        ExprAttributes* left_attr = $1; ExprAttributes* right_attr = $4; BackpatchList* marker_list = $2;
+        if (!left_attr || !right_attr) { yyerror("Invalid op for '||'"); delete left_attr; delete right_attr; delete marker_list; $$ = nullptr; }
+        else if (!left_attr->type || left_attr->type->base != TYPE_BOOL || !right_attr->type || right_attr->type->base != TYPE_BOOL) {
+             yyerror("Operands for '||' must be boolean"); delete left_attr; delete right_attr; delete marker_list; $$ = nullptr; }
+        else {
+             backpatch(*left_attr->falselist, marker_list->front()); // Backpatch left's FALSE to start of right expr
+             $$ = new ExprAttributes(); $$->type = left_attr->type; // Result is boolean
+             $$->truelist = new BackpatchList(mergelist(*left_attr->truelist, *right_attr->truelist)); // Merge truelists
+             $$->falselist = right_attr->falselist; right_attr->falselist = nullptr; // Transfer ownership of right's falselist
+             std::cout << "Debug: Logical OR processed" << std::endl;
+             // Cleanup owned resources
+             delete left_attr->truelist; delete left_attr->falselist; delete left_attr;
+             delete right_attr->truelist; delete right_attr; // right's falselist was transferred
+             delete marker_list;
         }
       }
     ;
@@ -845,47 +730,173 @@ initializer /* Phase 3: Handles expression */
     ;
 
 /* 3. Statements */
-statement
-    : compound_statement
-    | expression_statement
-    | selection_statement
-    | iteration_statement
-    | jump_statement
+statement /* Type: stmt_attr_ptr */
+    : compound_statement    { $$ = $1; }
+    | expression_statement  { $$ = $1; }
+    | selection_statement   { $$ = $1; }
+    | iteration_statement   { $$ = $1; /* Phase 5 */ }
+    | jump_statement        { $$ = $1; }
     ;
 
-compound_statement /* Phase 2: Scope handling */
+
+compound_statement /* Type: stmt_attr_ptr */
     : BEGIN_TOKEN { begin_scope(); std::cout << "Debug: Entered scope" << std::endl;}
-      block_item_list_opt
-      END_TOKEN { std::cout << "Debug: Exiting scope" << std::endl; end_scope(); }
+      block_item_list_opt /* Type: stmt_attr_ptr */
+      END_TOKEN
+        {
+            std::cout << "Debug: Exiting scope" << std::endl; end_scope();
+            $$ = $3 ? $3 : new StmtAttributes(); // If list was null, $$ gets new empty attributes
+        }
     ;
 
-block_item_list_opt : /* empty */ | block_item_list ;
-block_item_list : block_item | block_item_list block_item ;
-block_item : declaration | statement ;
-
-expression_statement
-    : ';' { std::cout << "Debug: Empty statement" << std::endl; }
-    | expression ';' { /* Phase 3: Cleanup attributes */ std::cout << "Debug: Expression statement" << std::endl; if ($1) { delete $1; } }
+block_item_list_opt /* Type: stmt_attr_ptr */
+    : /* empty */ { $$ = nullptr; } /* Null means no statements, no nextlist */
+    | block_item_list { $$ = $1; } /* Propagate attributes from list */
     ;
 
-selection_statement /* Phase 4: Backpatching */
-    : IF '(' expression ')' statement %prec IFX { if($3) delete $3; /* Phase 4 */ }
-    | IF '(' expression ')' statement ELSE statement { if($3) delete $3; /* Phase 4 */ }
+block_item_list /* Type: stmt_attr_ptr */
+    : block_item { $$ = $1; /* First item's attributes */ }
+    | block_item_list M block_item /* --- Phase 4 Step 5: Sequencing --- */
+      {
+        StmtAttributes* list_attr = $1;
+        BackpatchList* marker_list = $2; // Contains index of first quad of block_item ($3)
+        StmtAttributes* item_attr = $3;
+
+        if (!list_attr) { // If first item was null (e.g., empty decl)
+            $$ = item_attr; // The current item becomes the effective start
+            delete marker_list; // M not used for backpatching here
+        } else {
+            if (list_attr->nextlist) {
+                // Backpatch the previous statement list's nextlist to the start of the current item
+                backpatch(*list_attr->nextlist, marker_list->front());
+                std::cout << "Debug: Backpatched list at " << marker_list->front() << std::endl;
+                delete list_attr->nextlist; // Clean up the now-used list
+            }
+            // The combined nextlist is the nextlist of the *last* statement ($3)
+            if (item_attr) {
+                 $$ = item_attr; // Transfer ownership of last item's attributes
+            } else {
+                 $$ = new StmtAttributes(); // If last item was null, create new attributes
+            }
+            // Cleanup intermediate attributes/lists
+            delete list_attr; // list_attr->nextlist already deleted or was null
+            delete marker_list;
+        }
+      }
     ;
 
-iteration_statement /* Phase 5: Backpatching */
+block_item /* Type: stmt_attr_ptr */
+    : declaration { $$ = new StmtAttributes(); /* Declarations have no nextlist */ }
+    | statement   { $$ = $1; /* Propagate attributes from the actual statement */ }
+    ;
+
+expression_statement /* Type: stmt_attr_ptr */
+    : ';' { $$ = new StmtAttributes(); }
+    | expression ';' { if ($1) delete $1; $$ = new StmtAttributes(); } /* Cleanup expr */
+    ;
+
+/* --- Phase 4 Step 6: IF / IF-ELSE Logic --- */
+selection_statement /* Type: stmt_attr_ptr */
+    : IF '(' expression ')' M statement %prec IFX
+        {
+            ExprAttributes* expr_attr = $3;
+            BackpatchList* marker_M_list = $5; // List with quad index for start of 'then' statement
+            StmtAttributes* stmt_attr = $6;
+
+            if (!expr_attr) { yyerror("Invalid condition for IF"); $$ = new StmtAttributes(); delete marker_M_list; delete stmt_attr;}
+            else if (!expr_attr->type || expr_attr->type->base != TYPE_BOOL) {
+                 yyerror("IF condition must be boolean"); delete expr_attr; delete marker_M_list; delete stmt_attr; $$ = new StmtAttributes();
+            } else {
+                 backpatch(*expr_attr->truelist, marker_M_list->front()); // If true, jump to statement's start
+
+                 $$ = new StmtAttributes();
+                 // The nextlist for the IF statement consists of:
+                 // 1. Jumps from the expression's falselist (skipping the statement)
+                 // 2. Jumps from the statement's nextlist (exiting the statement)
+                 if (stmt_attr && stmt_attr->nextlist) {
+                     $$->nextlist = new BackpatchList(mergelist(*expr_attr->falselist, *stmt_attr->nextlist));
+                     delete stmt_attr->nextlist; // stmt_attr's list merged, delete pointer
+                 } else {
+                     $$->nextlist = expr_attr->falselist; // Only falselist if statement has no nextlist
+                     expr_attr->falselist = nullptr;      // Avoid double delete, ownership transferred
+                 }
+                 std::cout << "Debug: IF statement processed. Nextlist created." << std::endl;
+
+                 // Cleanup
+                 delete expr_attr->truelist;
+                 delete expr_attr->falselist; // Might be null if transferred
+                 delete expr_attr;
+                 delete marker_M_list;
+                 delete stmt_attr; // stmt_attr->nextlist already handled
+            }
+        }
+    | IF '(' expression ')' M statement N ELSE M statement
+        {
+            ExprAttributes* expr_attr = $3;
+            BackpatchList* marker_M1_list = $5; // Start of 'then' statement
+            StmtAttributes* stmt1_attr = $6;
+            BackpatchList* marker_N_list = $7;  // GOTO skipping 'else' (list with 1 index)
+            BackpatchList* marker_M2_list = $9; // Start of 'else' statement
+            StmtAttributes* stmt2_attr = $10;
+
+            if (!expr_attr) { yyerror("Invalid condition for IF-ELSE"); $$ = new StmtAttributes(); delete marker_M1_list; delete stmt1_attr; delete marker_N_list; delete marker_M2_list; delete stmt2_attr;}
+            else if (!expr_attr->type || expr_attr->type->base != TYPE_BOOL) {
+                 yyerror("IF-ELSE condition must be boolean"); delete expr_attr; delete marker_M1_list; delete stmt1_attr; delete marker_N_list; delete marker_M2_list; delete stmt2_attr; $$ = new StmtAttributes();
+            } else {
+                backpatch(*expr_attr->truelist, marker_M1_list->front());  // If true, jump to 'then' statement
+                backpatch(*expr_attr->falselist, marker_M2_list->front()); // If false, jump to 'else' statement
+
+                $$ = new StmtAttributes();
+                // Merge nextlists: stmt1->next + N + stmt2->next
+                BackpatchList temp_list1, temp_list2;
+
+                // Combine stmt1->nextlist and N's list
+                if (stmt1_attr && stmt1_attr->nextlist) {
+                    temp_list1 = mergelist(*stmt1_attr->nextlist, *marker_N_list);
+                    delete stmt1_attr->nextlist; // Cleanup original list
+                } else {
+                    temp_list1 = *marker_N_list; // Only the jump over else
+                }
+
+                // Combine result with stmt2->nextlist
+                if (stmt2_attr && stmt2_attr->nextlist) {
+                     temp_list2 = mergelist(temp_list1, *stmt2_attr->nextlist);
+                     delete stmt2_attr->nextlist; // Cleanup original list
+                } else {
+                     temp_list2 = temp_list1; // Only jumps from 'then' and 'N'
+                }
+                 $$->nextlist = new BackpatchList(temp_list2); // Assign final merged list
+
+                 std::cout << "Debug: IF-ELSE statement processed. Nextlist created." << std::endl;
+
+                 // Cleanup
+                 delete expr_attr->truelist;
+                 delete expr_attr->falselist;
+                 delete expr_attr;
+                 delete marker_M1_list;
+                 delete stmt1_attr; // stmt1_attr->nextlist already handled
+                 delete marker_N_list;
+                 delete marker_M2_list;
+                 delete stmt2_attr; // stmt2_attr->nextlist already handled
+            }
+        }
+    ;
+
+iteration_statement /* Type: stmt_attr_ptr */
+    // --- Actions to be added in Phase 5 ---
     : FOR '(' expression_opt ';' expression_opt ';' expression_opt ')' statement
-      { /* Clean up expression results */ if($3) delete $3; if($5) delete $5; if($7) delete $7; /* Phase 5 */ }
+      { /* Clean up expression results */ if($3) delete $3; if($5) delete $5; if($7) delete $7; delete $9; $$ = new StmtAttributes(); /* Placeholder */ }
     ;
 
-expression_opt /* Now has type expr_attr_ptr */
-    : /* empty */ { $$ = nullptr; } /* Return null pointer */
-    | expression  { $$ = $1; }      /* Propagate */
+expression_opt /* Type: expr_attr_ptr */
+    : /* empty */ { $$ = nullptr; }
+    | expression  { $$ = $1; }
     ;
 
-jump_statement /* Phase 6: Return TAC */
-    : RETURN ';' { /* Phase 6 */ }
-    | RETURN expression ';' { if($2) delete $2; /* Phase 6 */ }
+jump_statement /* Type: stmt_attr_ptr */
+    // --- Actions to be added in Phase 6 ---
+    : RETURN ';' { $$ = new StmtAttributes(); }
+    | RETURN expression ';' { if($2) delete $2; $$ = new StmtAttributes(); }
     ;
 
 /* 4. External Definitions */
