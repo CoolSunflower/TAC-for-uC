@@ -456,14 +456,39 @@ external_declaration
     ;
 
 function_definition
-    : type_specifier declarator compound_statement
-        { /* Phase 6: Process function definition */
-          // Similar to variable declaration, insert function symbol
-          // The type ($1) and declarator ($2) provide info.
-          // Need function-specific TypeInfo creation.
-          delete $1; // Cleanup base return type
-          // Declarator $2 holds function name ($2.name)
-          // Compound statement $3 handles the body scope.
+    : type_specifier declarator 
+        {
+            // 1. Create function symbol before entering compound statement
+            std::string func_name = $2->name;
+            
+            // Create function type with return type
+            TypeInfo* func_type = new TypeInfo(TYPE_FUNCTION);
+            func_type->return_type = $1; // Store return type from type_specifier
+            
+            // Create the function symbol
+            Symbol* func_sym = new Symbol(func_name, func_type);
+            
+            // Insert into global scope
+            if (!insert_symbol(func_name, func_type)) {
+                yyerror(("Redeclaration of function '" + func_name + "'").c_str());
+            } else {
+                std::cout << "Debug: Inserted function symbol '" << func_name 
+                          << "' with return type '" << $1->toString() << "'" << std::endl;
+            }
+            
+            // Remember the function symbol for nested scope attachment
+            // Store in a global variable to avoid pass-through attributes
+            current_function = func_sym;
+        }
+      compound_statement
+        {
+            // 4. Link function symbol to its scope
+            if (current_function && current_function->nested_table == nullptr) {
+                // Get the scope we're about to exit
+                current_function->nested_table = current_symbol_table;
+            }
+            
+            current_function = nullptr; // Reset for next function
         }
     ;
 

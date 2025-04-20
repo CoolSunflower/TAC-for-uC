@@ -91,8 +91,8 @@ public:
     bool insert(const std::string& name, Symbol* symbol);
 };
 
-// Add near other extern declarations
 extern std::vector<Symbol*> pending_type_symbols; // Symbols waiting for type assignment
+extern Symbol* current_function; // Tracks function being processed
 void apply_pending_types(TypeInfo* type);
 
 // 4. QUAD AND BACKPATCH DEFINITIONS

@@ -8,7 +8,7 @@ SymbolTable* global_symbol_table = nullptr;
 SymbolTable* current_symbol_table = nullptr;
 int next_quad_index = 0;
 int temp_counter = 0;
-// Define with other globals
+Symbol* current_function = nullptr;
 std::vector<Symbol*> pending_type_symbols;
 
 // Add this helper function
@@ -79,7 +79,6 @@ bool SymbolTable::insert(const std::string& name, Symbol* symbol) {
     return true;
 }
     
-// --- TypeInfo Implementation ---
 std::string TypeInfo::toString() const {
     switch(base) {
         case TYPE_VOID: return "void";
@@ -88,9 +87,26 @@ std::string TypeInfo::toString() const {
         case TYPE_INTEGER: return "integer";
         case TYPE_FLOAT: return "float";
         case TYPE_POINTER: return (ptr_type ? ptr_type->toString() + "*" : "pointer(unknown)");
-        // Basic array/function representation for now
-        case TYPE_ARRAY: return "array(...)"; 
-        case TYPE_FUNCTION: return "function(...)";
+        case TYPE_ARRAY: {
+            // CRITICAL FIX: Show element type and dimensions
+            std::string elem_type = "unknown";
+            if (ptr_type) {
+                elem_type = ptr_type->toString();
+            }
+            
+            std::string dims_str = "";
+            if (!dims.empty()) {
+                dims_str = "[";
+                for (size_t i = 0; i < dims.size(); ++i) {
+                    if (i > 0) dims_str += ",";
+                    dims_str += std::to_string(dims[i]);
+                }
+                dims_str += "]";
+            }
+            
+            return "array<" + elem_type + ">" + dims_str;
+        }
+        case TYPE_FUNCTION: return "function";
         default: return "unknown";
     }
 }
@@ -225,6 +241,14 @@ Symbol* insert_symbol(const std::string& name, TypeInfo* type) {
     return sym;
 }
 
+void print_debug_scope() {
+    if (current_symbol_table) {
+        std::cout << "Debug: Current scope level is " << current_symbol_table->scope_level << std::endl;
+    } else {
+        std::cout << "Debug: No current symbol table" << std::endl;
+    }
+}
+
 // Creates a new scope nested within the current one
 SymbolTable* begin_scope() {
     if (!current_symbol_table) initialize_symbol_tables();
@@ -233,6 +257,7 @@ SymbolTable* begin_scope() {
     SymbolTable* new_table = new SymbolTable(current_symbol_table, next_level);
     current_symbol_table->child_scopes.push_back(new_table); // Add child to parent's list
     current_symbol_table = new_table;
+    print_debug_scope(); // Optional debug
     return new_table;
 }
 
@@ -244,11 +269,12 @@ void end_scope() {
         
         // Clean up the current scope's table IF it's not stored elsewhere
         // delete current_symbol_table; // Be careful with ownership if tables are stored!
-        
+        print_debug_scope(); // Optional debug        
         current_symbol_table = parent_table;
         // std::cout << "Debug: Exited to scope level " << current_symbol_table->scope_level << std::endl; // Optional debug
     } else {
-         std::cerr << "Warning: Attempted to end global scope or symbol table not initialized." << std::endl;
+        print_debug_scope(); // Optional debug
+        std::cerr << "Warning: Attempted to end global scope or symbol table not initialized." << std::endl;
     }
 }
 
@@ -329,18 +355,18 @@ void print_symbol_table(SymbolTable* table_to_print, int level) {
     }
     
     std::cout << indent << std::left << std::setw(20) << "Name" 
-              << std::setw(15) << "Type" 
+              << std::setw(30) << "Type" 
               << std::setw(8) << "Size" 
               << std::setw(8) << "Offset" 
               << "Scope Level: " << table_to_print->scope_level << std::endl;
-    std::cout << indent << std::string(60, '-') << std::endl;
+    std::cout << indent << std::string(66, '-') << std::endl;
 
     // Print all symbols in this table
     for (const auto& [name, symbol] : table_to_print->symbols) {
         if (!symbol) continue;
         std::cout << indent 
                   << std::left << std::setw(20) << symbol->name
-                  << std::setw(15) << (symbol->type ? symbol->type->toString() : "N/A")
+                  << std::setw(30) << (symbol->type ? symbol->type->toString() : "N/A")
                   << std::setw(8) << symbol->size
                   << std::setw(8) << symbol->offset
                   << std::endl;
@@ -371,7 +397,8 @@ void cleanup_translator() {
     // Perform cleanup related to the translator module
     // Proper cleanup might involve recursively deleting nested tables if they are owned
     delete global_symbol_table; 
-    global_symbol_table = nullptr; // Good practice
+    global_symbol_table = nullptr; 
     current_symbol_table = nullptr;
+    current_function = nullptr;
     std::cout << "Translator resources cleaned up." << std::endl;
 }
