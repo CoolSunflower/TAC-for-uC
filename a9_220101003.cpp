@@ -46,21 +46,34 @@ void apply_pending_types(TypeInfo* base_type) {
 
         // Handle arrays (applied *after* pointer chain is built)
         if (!sym->pending_dims.empty()) {
-            // ... (existing array handling logic - should work correctly with final_type) ...
-            // Example:
-            int dim = sym->pending_dims[0]; // Assuming 1D for now
-            TypeInfo* array_type = new TypeInfo(TYPE_ARRAY, 0);
-            array_type->ptr_type = final_type; // Element type is the pointer/base type
-            array_type->dims.push_back(dim);
-            // Calculate width...
-            final_type = array_type; // Symbol's type is now array
+           // --- Array Handling Logic ---
+            if (!final_type) { // Should not happen if base_type was valid
+                std::cerr << "Error: Cannot create array of unknown element type for '" << sym->name << "'" << std::endl;
+                // Clean up final_type if partially built? It should be null here.
+            } else {
+                // Assuming 1D arrays for now as per grammar
+                int dim = sym->pending_dims[0];
+                TypeInfo* array_type = new TypeInfo(TYPE_ARRAY, 0); // Initial size 0
+                array_type->ptr_type = final_type; // Element type is the pointer/base type built so far
+                array_type->dims.push_back(dim);
+
+                // Calculate total array size/width
+                if (final_type->width > 0 && dim > 0) {
+                    array_type->width = final_type->width * dim;
+                } else {
+                    std::cerr << "Warning: Cannot calculate size for array '" << sym->name
+                            << "' (element size=" << final_type->width << ", dim=" << dim << ")" << std::endl;
+                    array_type->width = 0; // Indicate unknown size
+                }
+                final_type = array_type; // Symbol's type is now the array type
+            }
+            sym->pending_dims.clear(); // Processed dimensions
+            // --- End Array Handling ---
         }
 
         // Assign the final constructed type back to the symbol
         sym->type = final_type;
         sym->size = final_type ? final_type->width : 0; // Update size
-
-        // ... (Optional: Revisit initializer assignment with type checking here) ...
 
         if (sym->type) {
             std::cout << "Debug: Applied final type '" << sym->type->toString()
@@ -215,7 +228,9 @@ std::string Quad::toString() const {
         return "* " + res_str + " = " + a1_str;
     }
     else if (op == OP_ARRAY_ACCESS) { return res_str + " = " + a1_str + "[" + a2_str + "]"; }
-    else if (op == OP_ARRAY_ASSIGN) { return a1_str + "[" + a2_str + "] = " + res_str; }
+    else if (op == OP_ARRAY_ASSIGN) {
+        return res_str + "[" + a1_str + "] = " + a2_str;
+    }
 
     // Fallback (shouldn't normally be reached if all ops handled)
     return op_str + ", " + res_str + ", " + a1_str + ", " + a2_str;
