@@ -30,6 +30,7 @@ void yyerror(const char* s);
         std::string name;
         TypeInfo* type;
         int array_dim;
+        std::vector<Symbol*>* parameter_list = nullptr; 
         DeclaratorAttributes() : type(nullptr), array_dim(0) {}
         ~DeclaratorAttributes() {}
     };
@@ -80,6 +81,7 @@ void yyerror(const char* s);
     Symbol* sym_ptr;
     TypeInfo* type_ptr;
     BackpatchList* list_ptr;
+    std::vector<Symbol*>* param_list_ptr; 
 
     DeclaratorAttributes* decl_attr_ptr; /* Phase 2 */
     ExprAttributes* expr_attr_ptr;       /* Phase 3 */
@@ -118,6 +120,9 @@ void yyerror(const char* s);
 /* --- End Phase 4 --- */
 
 %type <type_ptr> pointer /* <<< Add type for pointer chain */
+%type <param_list_ptr> parameter_list // <<< CHANGE/ADD
+%type <sym_ptr> parameter_declaration // <<< CHANGE/ADD
+%type <param_list_ptr> identifier_list_opt identifier_list // <<< Placeholder if needed later
 
 /* Operator Precedence and Associativity */
 %right '='
@@ -1139,71 +1144,82 @@ direct_declarator /* Phase 2: Creates DeclaratorAttributes */
           else { $$->array_dim = $3; }
         }
     | direct_declarator '[' ']' { $$ = $1; yyerror("Array dimension must be specified"); }
-    | direct_declarator '(' parameter_list ')'
+    | direct_declarator '(' parameter_list ')' /* <<< MODIFIED RULE */
       {
-          /* Phase 6 placeholder, Phase 3 needs name */
-          /* $1 contains attributes including the name from the nested direct_declarator */
-          /* Parameters $3 not used yet */
-          $$ = $1; /* Propagate the attributes containing the name */
-          /* Add parameter processing in Phase 6 */
+          $$ = $1; /* Propagate attributes (name) from nested direct_declarator */
+          $$->parameter_list = $3; /* Attach the collected parameter list ($3 is vector<Symbol*>*) */
+          std::cout << "Debug: Attached parameter list to declarator for '" << $$->name << "'" << std::endl;
       }
-    | direct_declarator '(' identifier_list_opt ')'
+    | direct_declarator '(' identifier_list_opt ')' /* <<< Keep old style for now */
       {
           /* Phase 6 placeholder, Phase 3 needs name */
-          /* $1 contains attributes including the name */
-          /* Parameters $3 not used yet */
           $$ = $1; /* Propagate the attributes containing the name */
-          /* Add parameter processing in Phase 6 */
+          /* Parameters $3 not used yet */
+          // $$->parameter_list = nullptr; // Or handle identifier_list if needed
       }
     ;
 
 /* Parameters deferred */
-/* --- Parameter List Processing --- */
-parameter_list
+parameter_list /* Returns std::vector<Symbol*>* */
     : parameter_declaration
         {
-            // First parameter - nothing to propagate up
+            // First parameter
+            $$ = new std::vector<Symbol*>();
+            if ($1) { // Check if parameter_declaration succeeded
+                $$->push_back($1); // $1 is Symbol*
+            } else {
+                 yyerror("Invalid first parameter declaration");
+                 // $$ remains an empty vector
+            }
         }
     | parameter_list ',' parameter_declaration
         {
-            // Additional parameter - nothing to propagate up
+            // Additional parameter
+            $$ = $1; // Reuse the vector from the list so far
+            if ($3) { // Check if parameter_declaration succeeded
+                $$->push_back($3); // $3 is Symbol*
+            } else {
+                 yyerror("Invalid subsequent parameter declaration");
+            }
         }
     ;
 
-parameter_declaration
+parameter_declaration /* Returns Symbol* */
     : type_specifier declarator
         {
-            // Process parameter and add to current function's scope
-            if (!current_symbol_table) {
-                yyerror("No active scope for parameter declaration");
-            } else {
-                std::string param_name = $2->name;
-                Symbol* param_sym = insert_symbol(param_name, $1); // Transfer ownership of type
-                
-                if (param_sym) {
-                    // If we have a function context, add parameter info to function type
-                    if (current_function && current_function->type) {
-                        TypeInfo* param_type_copy = new TypeInfo($1->base, $1->width);
-                        current_function->type->param_types.push_back(param_type_copy);
-                        std::cout << "Debug: Added parameter '" << param_name << "' to function '" 
-                                << current_function->name << "'" << std::endl;
-                    }
-                    
-                    // Handle array parameters if needed
-                    if ($2->array_dim > 0) {
-                        // For Phase 6, treat arrays as pointers in parameters
-                        if (param_sym->type) {
-                            TypeInfo* array_type = new TypeInfo(TYPE_POINTER, 8);
-                            array_type->ptr_type = param_sym->type; // Original type becomes pointed-to type
-                            param_sym->type = array_type;
-                        }
-                    }
-                } else {
-                    delete $1; // Clean up type if insertion failed
-                }
+            std::string param_name = $2->name;
+            Symbol* param_sym = nullptr; // Initialize
+
+            // *** Create the parameter symbol ***
+            TypeInfo* final_param_type = $1; // Start with base type ($1 owns this)
+            if ($2->type) { // If declarator had pointer info
+                TypeInfo* ptr_chain = $2->type; // $2 owns this chain
+                TypeInfo* current = ptr_chain;
+                while(current->ptr_type) { current = current->ptr_type; }
+                current->ptr_type = final_param_type; // Link base type at the end
+                final_param_type = ptr_chain; // Final type is the head of the chain
+                // Base type $1 ownership is now part of the chain owned by final_param_type
             }
-            
-            delete $2; // Clean up declarator
+            // Handle array parameters (often treated as pointers)
+            if ($2->array_dim > 0) {
+                 TypeInfo* array_as_ptr_type = new TypeInfo(TYPE_POINTER, 8);
+                 array_as_ptr_type->ptr_type = final_param_type; // Point to original element type
+                 final_param_type = array_as_ptr_type; // Ownership transferred
+                 std::cout << "Debug: Treating array parameter '" << param_name << "' as pointer." << std::endl;
+            }
+
+            param_sym = new Symbol(param_name, final_param_type); // Create symbol with final type
+            param_sym->size = final_param_type->width; // Set size
+
+            std::cout << "Debug: Created pending parameter symbol '" << param_name << "' (" 
+                      << final_param_type->toString() << ")" << std::endl;
+
+            // Cleanup declarator attributes struct ($2)
+            // $2->type ownership was transferred to final_param_type if it existed
+            $2->type = nullptr; 
+            delete $2; 
+
+            $$ = param_sym; // Return the created symbol
         }
     ;
 
@@ -1238,11 +1254,40 @@ statement /* Type: stmt_attr_ptr */
 
 
 compound_statement /* Type: stmt_attr_ptr */
-    : BEGIN_TOKEN { begin_scope(); std::cout << "Debug: Entered scope" << std::endl;}
+    : BEGIN_TOKEN 
+        { 
+            std::string scope_label = "";
+            if (current_function && current_symbol_table == global_symbol_table) { // If this is the top-level block for a function
+                scope_label = current_function->name;
+            }
+            SymbolTable* new_scope = begin_scope(scope_label); // Pass the label
+            std::cout << "Debug: Entered compound_statement scope (Level " << new_scope->scope_level << ")" << std::endl;
+
+            // *** If in function context, add parameters to this new scope ***
+            if (current_function && new_scope->parent == global_symbol_table) { // Check if this is the function's top-level scope
+                 std::cout << "Debug: Adding " << current_function->parameters.size() << " parameters to function scope." << std::endl;
+                 for (Symbol* param : current_function->parameters) {
+                     if (!new_scope->insert(param->name, param)) {
+                         // This shouldn't happen if parameter names are unique
+                         yyerror(("Error inserting parameter '" + param->name + "' into scope").c_str());
+                         delete param; // Avoid leak if insert fails
+                     } else {
+                         std::cout << "Debug: Inserted parameter '" << param->name << "' into current scope." << std::endl;
+                         // Assign offset if needed (basic example)
+                         // param->offset = current_offset; current_offset += param->size; 
+                     }
+                 }
+                 // Clear the temporary list in the function symbol? Or keep for signature?
+                 // current_function->parameters.clear(); // Maybe not clear if needed elsewhere
+            }
+        }
       block_item_list_opt /* Type: stmt_attr_ptr */
       END_TOKEN
         {
-            std::cout << "Debug: Exiting scope" << std::endl; end_scope();
+            std::cout << "Debug: Exiting compound_statement scope (Level " << current_symbol_table->scope_level << ")" << std::endl; 
+            // *** RESTORE end_scope() ***
+            end_scope(); 
+            
             $$ = $3 ? $3 : new StmtAttributes(); // If list was null, $$ gets new empty attributes
         }
     ;
@@ -1530,61 +1575,77 @@ translation_unit : external_declaration | translation_unit external_declaration 
 external_declaration : function_definition | declaration ;
 
 function_definition
-    : type_specifier declarator 
+    : type_specifier declarator // $1 = TypeInfo* (return type), $2 = DeclaratorAttributes*
         { 
-            // Create function symbol with proper return type and name from declarator
+            // Action 1: Before the compound statement
             std::string func_name = $2->name;
-            Symbol* func_sym = lookup_symbol(func_name, false);
+            Symbol* func_sym = lookup_symbol(func_name, false); // Look only in global scope
             
-            if (!func_sym) {
+            if (func_sym) {
+                 yyerror(("Redefinition of function '" + func_name + "'").c_str());
+                 delete $1; // Clean up return type
+                 if ($2->parameter_list) { // Clean up collected params if func exists
+                     for(auto p : *$2->parameter_list) delete p;
+                     delete $2->parameter_list;
+                 }
+                 func_sym = nullptr; // Prevent further processing
+            } else {
+                // Create the function symbol in the global scope
                 func_sym = insert_symbol(func_name, new TypeInfo(TYPE_FUNCTION, 0));
                 if (func_sym) {
-                    // Set function return type based on type_specifier
-                    func_sym->type->return_type = $1; // Transfer ownership of $1
+                    func_sym->type->return_type = $1; // Transfer ownership of return type ($1)
                     std::cout << "Debug: Created function symbol '" << func_name << "' with return type " 
                              << func_sym->type->return_type->toString() << std::endl;
+
+                    // *** Process collected parameters ***
+                    if ($2->parameter_list) {
+                        func_sym->parameters = *$2->parameter_list; // Copy vector content (symbols are now owned by func_sym)
+                        // Build param_types for the function type signature
+                        for (Symbol* param : func_sym->parameters) {
+                             if (param && param->type) {
+                                 // Use a copy for the signature to avoid ownership issues if param->type is modified later
+                                 func_sym->type->param_types.push_back(new TypeInfo(*(param->type))); 
+                                 std::cout << "Debug: Added param type " << param->type->toString() << " to function signature." << std::endl;
+                             }
+                        }
+                        delete $2->parameter_list; // Delete the vector container itself
+                        $2->parameter_list = nullptr; // Avoid double delete in ~DeclaratorAttributes
+                    } else {
+                         std::cout << "Debug: Function '" << func_name << "' has no parameters." << std::endl;
+                    }
+                    // *** End parameter processing ***
+
                 } else {
-                    delete $1; // Clean up if we couldn't create the function symbol
+                     yyerror(("Failed to insert function symbol '" + func_name + "'").c_str());
+                     delete $1; // Clean up return type
+                     if ($2->parameter_list) { // Clean up collected params on failure
+                         for(auto p : *$2->parameter_list) delete p;
+                         delete $2->parameter_list;
+                     }
                 }
-            } else {
-                // Function already exists - error or allow redefinition?
-                yyerror(("Redefinition of function '" + func_name + "'").c_str());
-                delete $1;
             }
             
-            // Store function being processed as global
-            current_function = func_sym;
-            
-            // Create nested scope for function body
-            SymbolTable* func_scope = begin_scope();
-            if (func_sym) {
-                func_sym->nested_table = func_scope;
-            }
+            // Set global context *before* compound statement processes the body
+            current_function = func_sym; 
             
             // Emit function begin marker
-            emit(OP_FUNC_BEGIN, func_name);
-            
-            delete $2; // Clean up declarator
-        }
-        compound_statement
-        {
-            // Handle function end
-            if (current_function) {
-                // Check if function with non-void return type has a return statement
-                if (current_function->type && current_function->type->return_type && 
-                    current_function->type->return_type->base != TYPE_VOID) {
-                    // We could warn about missing return, but that's a semantic warning not error
-                }
-                
-                // Emit function end marker
-                emit(OP_FUNC_END, current_function->name);
-                
-                // Reset current_function as we're done processing it
-                current_function = nullptr;
+            if (func_sym) { 
+                emit(OP_FUNC_BEGIN, func_name);
             }
             
-            // End_scope called by compound_statement already
-            $$ = $4; // Explicit cast to help Bison understand; // Propagate statement attributes
+            // Clean up declarator attributes struct ($2)
+            // $2->parameter_list was handled above
+            // $2->type (pointer chain for func return type?) should be null or handled if functions can return pointers
+            delete $2; 
+        }
+        compound_statement // This rule now handles the functions scope and adds params from current_function
+        {
+            // Action 2: After the compound statement
+            if (current_function) { 
+                emit(OP_FUNC_END, current_function->name);
+                current_function = nullptr; // Reset context
+            }
+            $$ = $4; // Propagate statement attributes from compound_statement
         }
     ;
 
@@ -1624,7 +1685,15 @@ int main(int argc, char** argv) {
     if (parse_result == 0) {
         std::cout << "Parsing completed successfully." << std::endl;
         print_symbol_table(global_symbol_table);
-        print_quads(); /* Phase 3: Should now contain expression quads */
+
+        // Print Three Address Code to standard output
+        std::string tac_filename = std::string(argv[1]) + ".tac";
+        print_tac(tac_filename);
+
+        // Construct quad filename and print quads to file
+        std::string quad_filename = std::string(argv[1]) + ".quad";
+        print_quads(quad_filename);
+
     } else { std::cerr << "Parsing failed." << std::endl; }
 
     /* Cleanup */

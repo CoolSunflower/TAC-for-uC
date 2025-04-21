@@ -111,8 +111,10 @@ struct Symbol {
     SymbolTable* nested_table = nullptr;
     bool is_temp = false;
     std::vector<int> pending_dims;
+    std::vector<Symbol*> parameters; 
 
-    Symbol(std::string n = "", TypeInfo* t = nullptr) : name(n), type(t), nested_table(nullptr) {}
+    Symbol(std::string n, TypeInfo* t = nullptr, int sz = 0, int off = 0)
+        : name(n), type(t), size(sz), offset(off) {}
 };
 
 class SymbolTable {
@@ -121,8 +123,10 @@ public:
     SymbolTable* parent;
     int scope_level;
     std::vector<SymbolTable*> child_scopes; 
+    std::string scope_name;
 
-    SymbolTable(SymbolTable* p = nullptr, int level = 0) : parent(p), scope_level(level) {}
+    SymbolTable(SymbolTable* p = nullptr, int level = 0, std::string name = "") : 
+        parent(p), scope_level(level), scope_name(name) {}
     ~SymbolTable();
     Symbol* lookup(const std::string& name);
     bool insert(const std::string& name, Symbol* symbol);
@@ -156,13 +160,14 @@ extern int temp_counter;
 
 // 6. FUNCTION PROTOTYPES
 void emit(op_code op, std::string result, std::string arg1 = "", std::string arg2 = "");
-void print_quads();
+void print_quads(const std::string& filename);
+void print_tac(const std::string& filename);
 int get_next_quad_index();
 
 void initialize_symbol_tables();
 Symbol* lookup_symbol(const std::string& name, bool recursive = true);
 Symbol* insert_symbol(const std::string& name, TypeInfo* type);
-SymbolTable* begin_scope();
+SymbolTable* begin_scope(std::string name);
 void end_scope();
 void print_symbol_table(SymbolTable* table_to_print = nullptr, int level = 0);
 

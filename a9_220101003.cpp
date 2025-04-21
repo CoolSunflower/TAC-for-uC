@@ -1,6 +1,8 @@
 #include "a9_220101003.h"
 #include <iostream>
 #include <iomanip> // For std::setw
+#include <fstream> // For file output
+#include <string>  // For filename manipulation
 
 // --- Define Global Variables ---
 std::vector<Quad> quad_list;
@@ -245,18 +247,120 @@ void emit(op_code op, std::string result, std::string arg1, std::string arg2) {
     next_quad_index++;
 }
 
-void print_quads() {
-    std::cout << "\n--- Generated Quads ---" << std::endl;
+// New function to print Three-Address Code (existing behavior)
+void print_tac(const std::string& filename) {
+    std::ofstream quad_file(filename);
+
+    quad_file << "\n--- Generated Three Address Code ---" << std::endl;
     if (quad_list.empty()) {
-        std::cout << "(No quads generated)" << std::endl;
+        quad_file << "(No TAC generated)" << std::endl;
         return;
     }
-    std::cout << std::left; // Left-align output
+    quad_file << std::left; // Left-align output
     for (size_t i = 0; i < quad_list.size(); ++i) {
-        std::cout << std::setw(4) << i << ": " << quad_list[i].toString() << std::endl;
+        quad_file << std::setw(4) << i << ": " << quad_list[i].toString() << std::endl;
     }
-    std::cout << "-----------------------" << std::endl;
+    quad_file << "------------------------------------" << std::endl;
 }
+
+// Modified function to print Quads to a file
+void print_quads(const std::string& filename) {
+    std::ofstream quad_file(filename);
+    if (!quad_file.is_open()) {
+        std::cerr << "Error: Could not open quad output file: " << filename << std::endl;
+        return;
+    }
+
+    quad_file << std::left; // Left-align output
+    quad_file << std::setw(15) << "Op"
+              << std::setw(15) << "Arg1"
+              << std::setw(15) << "Arg2"
+              << std::setw(15) << "Result" << std::endl;
+    quad_file << std::string(60, '-') << std::endl;
+
+
+    for (const auto& quad : quad_list) {
+        std::string op_str = opcode_to_string(quad.op);
+        std::string res_str = quad.result;
+        std::string a1_str = quad.arg1;
+        std::string a2_str = quad.arg2;
+
+        // Adjust fields based on operation for standard quad format
+        switch (quad.op) {
+            case OP_GOTO:
+                a1_str = ""; a2_str = ""; // Target is in result
+                break;
+            case OP_IF_FALSE:
+            case OP_IF_TRUE:
+                 // op arg1 goto result -> op=op, arg1=arg1, arg2="", result=result
+                 a2_str = "";
+                 break;
+            case OP_IF_LT: case OP_IF_GT: case OP_IF_LE: case OP_IF_GE: case OP_IF_EQ: case OP_IF_NE:
+                 // if arg1 OP arg2 goto result -> op=op, arg1=arg1, arg2=arg2, result=result
+                 break; // Fields are already correct
+            case OP_ASSIGN:
+                 // result = arg1 -> op=op, arg1=arg1, arg2="", result=result
+                 a2_str = "";
+                 break;
+            case OP_UMINUS: case OP_UPLUS: case OP_NOT: case OP_ADDR:
+                 // result = op arg1 -> op=op, arg1=arg1, arg2="", result=result
+                 a2_str = "";
+                 break;
+            case OP_INT2FLOAT: case OP_FLOAT2INT:
+                 // result = op arg1 -> op=op, arg1=arg1, arg2="", result=result
+                 a2_str = "";
+                 break;
+            case OP_PARAM:
+                 // param result -> op=op, arg1="", arg2="", result=result
+                 a1_str = ""; a2_str = "";
+                 break;
+            case OP_CALL:
+                 // result = call arg1, arg2 -> op=op, arg1=arg1, arg2=arg2, result=result (arg2 is count)
+                 break; // Fields are okay
+            case OP_RETURN:
+                 // return result -> op=op, arg1="", arg2="", result=result
+                 a1_str = ""; a2_str = "";
+                 break;
+            case OP_FUNC_BEGIN: case OP_FUNC_END:
+                 // op result -> op=op, arg1="", arg2="", result=result (func name)
+                 a1_str = ""; a2_str = "";
+                 break;
+            case OP_DEREF_ASSIGN: // *result = arg1
+                 op_str = "*="; // Use a distinct op string if needed
+                 a2_str = ""; // arg1 is source, result is target address
+                 break;
+            case OP_ASSIGN_DEREF: // result = *arg1
+                 op_str = "=*"; // Use a distinct op string if needed
+                 a2_str = ""; // arg1 is source address, result is target
+                 break;
+            case OP_ARRAY_ACCESS: // result = arg1[arg2]
+                 op_str = "=[]"; // Use a distinct op string
+                 // arg1=base, arg2=offset, result=target
+                 break; // Fields are okay
+            case OP_ARRAY_ASSIGN: // result[arg1] = arg2
+                 op_str = "[]="; // Use a distinct op string
+                 // arg1=offset, arg2=source, result=base
+                 break; // Fields are okay
+
+            // Binary ops (default case handles them)
+            // case OP_PLUS: case OP_MINUS: case OP_MULT: case OP_DIV: case OP_MOD:
+            // case OP_LT: case OP_GT: case OP_LE: case OP_GE: case OP_EQ: case OP_NE:
+            // case OP_AND: case OP_OR:
+            // result = arg1 op arg2 -> op=op, arg1=arg1, arg2=arg2, result=result
+            default:
+                 break; // Assume fields are correct for binary ops
+        }
+
+        quad_file << std::setw(15) << op_str
+                  << std::setw(15) << a1_str
+                  << std::setw(15) << a2_str
+                  << std::setw(15) << res_str << std::endl;
+    }
+
+    quad_file.close();
+    std::cout << "Quadruple code written to " << filename << std::endl;
+}
+
 
 int get_next_quad_index() {
     return next_quad_index;
@@ -322,11 +426,11 @@ void print_debug_scope() {
 }
 
 // Creates a new scope nested within the current one
-SymbolTable* begin_scope() {
+SymbolTable* begin_scope(std::string name = "") {
     if (!current_symbol_table) initialize_symbol_tables();
 
     int next_level = current_symbol_table->scope_level + 1;
-    SymbolTable* new_table = new SymbolTable(current_symbol_table, next_level);
+    SymbolTable* new_table = new SymbolTable(current_symbol_table, next_level, name);
     current_symbol_table->child_scopes.push_back(new_table); // Add child to parent's list
     current_symbol_table = new_table;
     print_debug_scope(); // Optional debug
@@ -624,7 +728,11 @@ void print_symbol_table(SymbolTable* table_to_print, int level) {
              }
         }
         if (!already_printed) {
-             std::cout << indent << "  Block scope:" << std::endl;
+            if (!child->scope_name.empty()) {
+                std::cout << indent << "  Scope for '" << child->scope_name << "':" << std::endl;
+            } else {
+                std::cout << indent << "  Block scope:" << std::endl;
+            }
              print_symbol_table(child, level + 1);
         }
     }
