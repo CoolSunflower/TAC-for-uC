@@ -12,39 +12,65 @@ Symbol* current_function = nullptr;
 std::vector<Symbol*> pending_type_symbols;
 
 // Add this helper function
-void apply_pending_types(TypeInfo* type) {
-    for (Symbol* sym : pending_type_symbols) {
-        if (sym) {
-            // Create appropriate type
-            TypeInfo* final_type;
-            
-            if (!sym->pending_dims.empty()) {
-                // Create array type
-                final_type = new TypeInfo(TYPE_ARRAY, 0);
-                final_type->dims = sym->pending_dims;
-                
-                // Create and link element type
-                final_type->ptr_type = new TypeInfo(type->base, type->width);
-                
-                // Calculate total size
-                int total_size = type->width;
-                for (int dim : sym->pending_dims) {
-                    total_size *= dim;
-                }
-                final_type->width = total_size;
-            } else {
-                // Create regular type
-                final_type = new TypeInfo(type->base, type->width);
-            }
+// --- Modify apply_pending_types ---
+void apply_pending_types(TypeInfo* base_type) {
+    if (!base_type) {
+         std::cerr << "Error: apply_pending_types called with null base_type." << std::endl;
+         // Clean up pending symbols to avoid memory leaks?
+         for (Symbol* sym : pending_type_symbols) {
+             delete sym->type; // Delete any partially built pointer chain
+         }
+         pending_type_symbols.clear();
+         return;
+    }
 
-            sym->type = final_type;
-            sym->size = final_type->width;
-            
-            std::cout << "Debug: Applied type '" << final_type->toString() 
-                    << "' to pending symbol '" << sym->name << "'" << std::endl;
+    std::cout << "Debug: Applying base type '" << base_type->toString() << "' to " << pending_type_symbols.size() << " pending symbols." << std::endl;
+
+    for (Symbol* sym : pending_type_symbols) {
+        if (!sym) continue;
+
+        TypeInfo* final_type = nullptr;
+        TypeInfo* base_type_copy = new TypeInfo(*base_type); // Use a copy for each symbol
+
+        if (sym->type) { // Pointer chain exists (sym->type holds the head from init_declarator)
+            TypeInfo* current = sym->type; // Head of pointer chain
+            while (current->ptr_type) { // Find the end of the chain
+                current = current->ptr_type;
+            }
+            current->ptr_type = base_type_copy; // Link the base type copy at the end
+            final_type = sym->type; // Final type is the head of the chain
+            sym->type = nullptr; // Ownership transferred from symbol to final_type temporarily
+        } else {
+            final_type = base_type_copy; // Just the base type copy, no pointers
+        }
+
+        // Handle arrays (applied *after* pointer chain is built)
+        if (!sym->pending_dims.empty()) {
+            // ... (existing array handling logic - should work correctly with final_type) ...
+            // Example:
+            int dim = sym->pending_dims[0]; // Assuming 1D for now
+            TypeInfo* array_type = new TypeInfo(TYPE_ARRAY, 0);
+            array_type->ptr_type = final_type; // Element type is the pointer/base type
+            array_type->dims.push_back(dim);
+            // Calculate width...
+            final_type = array_type; // Symbol's type is now array
+        }
+
+        // Assign the final constructed type back to the symbol
+        sym->type = final_type;
+        sym->size = final_type ? final_type->width : 0; // Update size
+
+        // ... (Optional: Revisit initializer assignment with type checking here) ...
+
+        if (sym->type) {
+            std::cout << "Debug: Applied final type '" << sym->type->toString()
+                      << "' to pending symbol '" << sym->name << "'" << std::endl;
+        } else {
+             std::cout << "Warning: Failed to determine final type for symbol '" << sym->name << "'" << std::endl;
         }
     }
     pending_type_symbols.clear(); // Reset for next declaration
+    // delete base_type; // NO! Caller (declaration rule) deletes the original base_type.
 }
 
 // --- SymbolTable Class Definition (Basic for Phase 1) ---

@@ -41,6 +41,8 @@ void yyerror(const char* s);
         BackpatchList* truelist = nullptr; // --- Phase 4 ---
         BackpatchList* falselist = nullptr;// --- Phase 4 ---
         std::vector<std::string>* param_names = nullptr; 
+        bool is_deref_lvalue = false;    // Still useful to know if it *originated* from a deref
+        Symbol* pointer_sym_for_lvalue = nullptr; // <<< ADD: Stores the original pointer symbol (e.g., 'p' in *p)
 
         ExprAttributes() {}
         ~ExprAttributes() {
@@ -110,6 +112,8 @@ void yyerror(const char* s);
 %type <stmt_attr_ptr> block_item_list_opt function_definition
 /* --- End Phase 4 --- */
 
+%type <type_ptr> pointer /* <<< Add type for pointer chain */
+
 /* Operator Precedence and Associativity */
 %right '='
 %left OR
@@ -144,6 +148,22 @@ N   : /* empty */
         }
     ;
 /* --- End Phase 4 --- */
+
+/* --- Add pointer rule --- */
+pointer /* Builds a chain of TypeInfo for pointers, returns the head */
+    : '*'
+        {
+            $$ = new TypeInfo(TYPE_POINTER, 8); // Assuming 8-byte pointers
+            $$->ptr_type = nullptr; // Base type (pointed-to type) filled in later
+            std::cout << "Debug: Pointer level 1" << std::endl;
+        }
+    | '*' pointer
+        {
+            $$ = new TypeInfo(TYPE_POINTER, 8);
+            $$->ptr_type = $2; // Link to the next pointer level or base type placeholder
+            std::cout << "Debug: Pointer level > 1" << std::endl;
+        }
+    ;
 
 /* Grammar Rules (Phase 3 - Expression TAC - CORRECTED v4 - NO MACRO) */
 
@@ -287,7 +307,7 @@ postfix_expression
                     
                     // Emit parameters in reverse order (C calling convention)
                     if ($3->param_names) {
-                        for (auto it = $3->param_names->rbegin(); it != $3->param_names->rend(); ++it) {
+                        for (auto it = $3->param_names->begin(); it != $3->param_names->end(); ++it) {
                             emit(OP_PARAM, *it);
                         }
                     }
@@ -378,6 +398,61 @@ argument_expression_list
 
 unary_expression
     : postfix_expression { $$ = $1; } /* Propagation */
+    | '&' unary_expression %prec '&' /* Address-of */
+      {
+        ExprAttributes* operand_attr = $2;
+        if (!operand_attr) { yyerror("Invalid operand for address-of operator '&'"); $$ = nullptr; }
+        else if (!operand_attr->place || operand_attr->place->is_temp) { // Basic L-value check
+            yyerror("L-value required for address-of operator '&'");
+            delete operand_attr; $$ = nullptr;
+        } else {
+            // Create pointer type: pointer to operand's type
+            TypeInfo* ptr_type = new TypeInfo(TYPE_POINTER, 8);
+            ptr_type->ptr_type = new TypeInfo(*(operand_attr->type)); // Copy operand's type
+            Symbol* result_temp = new_temp(ptr_type); // Temp to hold the address
+            emit(OP_ADDR, result_temp->name, operand_attr->place->name); // result = &operand
+            $$ = new ExprAttributes();
+            $$->place = result_temp; // Place holds the address temp
+            $$->type = ptr_type;     // Type is pointer
+            $$->is_deref_lvalue = false;
+            $$->pointer_sym_for_lvalue = nullptr; // Not applicable
+            std::cout << "Debug: Unary Op & -> " << result_temp->name << std::endl;
+            delete operand_attr;
+        }
+      }
+    | '*' unary_expression %prec '*' /* Dereference */
+      {
+         ExprAttributes* operand_attr = $2; // Attributes of the pointer expression (e.g., 'p')
+         if (!operand_attr || !operand_attr->type || operand_attr->type->base != TYPE_POINTER || !operand_attr->type->ptr_type || !operand_attr->place) {
+             yyerror("Cannot dereference non-pointer or invalid type");
+             delete operand_attr; $$ = nullptr;
+         } else {
+             // Type of the result is the type being pointed to
+             TypeInfo* pointed_to_type = new TypeInfo(*(operand_attr->type->ptr_type)); // Create a copy
+             // Create a temporary to hold the result of the dereference
+             Symbol* result_temp = new_temp(pointed_to_type);
+
+             // Emit the dereference TAC immediately: temp = *pointer
+             emit(OP_ASSIGN_DEREF, result_temp->name, operand_attr->place->name);
+
+             $$ = new ExprAttributes();
+             $$->place = result_temp; // Place now holds the temporary containing the value
+             $$->type = pointed_to_type; // Type is the pointed-to type
+             $$->is_deref_lvalue = true; // Mark that this originated from a dereference
+             $$->pointer_sym_for_lvalue = operand_attr->place; // Store the original pointer symbol ('p')
+
+             std::cout << "Debug: Unary Op * emitted: " << result_temp->name << " = *"
+                       << operand_attr->place->name << ". Storing pointer '"
+                       << $$->pointer_sym_for_lvalue->name << "' for potential L-value use." << std::endl;
+
+             // Don't delete operand_attr->place as it's stored in pointer_sym_for_lvalue
+             // Delete the rest of the operand attributes
+             delete operand_attr->type; // Delete the pointer TypeInfo
+             // delete operand_attr->truelist; // Handle lists if applicable
+             // delete operand_attr->falselist;
+             delete operand_attr; // Delete the container struct
+         }
+      }
     | unary_operator unary_expression %prec UMINUS
       {
         op_code op = (op_code)$1;
@@ -735,33 +810,81 @@ assignment_expression
             yyerror("Invalid operand(s) for assignment");
             delete lhs_attr; delete rhs_attr;
             $$ = nullptr;
-        } else if (!lhs_attr->place || lhs_attr->place->is_temp) { /* L-value check */
-            yyerror("L-value required for assignment target");
-            delete lhs_attr; delete rhs_attr;
-            $$ = nullptr;
-        } else if (!lhs_attr->type) { /* Type check */
-             yyerror("Invalid target for assignment (missing type)");
-             delete lhs_attr; delete rhs_attr;
-             $$ = nullptr;
-        } else {
-             TypeInfo* assign_check_type = typecheck(lhs_attr->type, rhs_attr->type, OP_ASSIGN);
-             if (!assign_check_type) {
-                 yyerror("Incompatible types for assignment");
+        } 
+        else if (lhs_attr->is_deref_lvalue) {
+            // Case: *p = rhs
+            if (!lhs_attr->pointer_sym_for_lvalue) { // Sanity check
+                yyerror("Internal error: L-value dereference missing pointer symbol");
+                delete lhs_attr; delete rhs_attr; $$ = nullptr;
+            } else if (!rhs_attr->type || !rhs_attr->place) {
+                 yyerror("Invalid RHS for assignment to pointer dereference");
+                 delete lhs_attr; delete rhs_attr; $$ = nullptr;
+            } else {
+                TypeInfo* target_type = lhs_attr->type; // This is the type *p points to (held in the temp's type)
+                // Type check: Can RHS be assigned to the type pointed to by LHS?
+                TypeInfo* assign_check_type = typecheck(target_type, rhs_attr->type, OP_ASSIGN);
+                if (!assign_check_type) {
+                    yyerror(("Incompatible types for assignment to pointer dereference: cannot assign " + rhs_attr->type->toString() + " to " + target_type->toString()).c_str());
+                    delete lhs_attr; delete rhs_attr; $$ = nullptr;
+                } else {
+                    delete assign_check_type; // Only needed for check
+                    Symbol* rhs_operand = convert_type(rhs_attr->place, target_type); // Convert RHS if necessary
+                    // Emit TAC: *ptr = value (using OP_DEREF_ASSIGN: *result = arg1)
+                    // Use the original pointer symbol stored earlier
+                    emit(OP_DEREF_ASSIGN, lhs_attr->pointer_sym_for_lvalue->name, rhs_operand->name);
+
+                    // Result of assignment expression is the assigned value (RHS)
+                    $$ = new ExprAttributes();
+                    $$->place = rhs_operand; // Use the (potentially converted) RHS symbol
+                    $$->type = new TypeInfo(*rhs_attr->type); // Copy RHS type
+                    $$->is_deref_lvalue = false; // Result is not an l-value deref
+                    $$->pointer_sym_for_lvalue = nullptr;
+
+                    std::cout << "Debug: Assignment *p = ... : *" << lhs_attr->pointer_sym_for_lvalue->name << " = " << rhs_operand->name << std::endl;
+                    delete lhs_attr; // Includes deleting target_type copy
+                    delete rhs_attr;
+                }
+            }
+        }
+        // --- End L-value Dereference Handling ---
+        else { // Normal assignment (variable = ...)
+            // Check if LHS is a valid L-value
+            if (!lhs_attr->place || lhs_attr->place->is_temp) {
+                yyerror("L-value required for assignment target");
+                delete lhs_attr; delete rhs_attr;
+                $$ = nullptr;
+            } else if (!lhs_attr->type || !rhs_attr->type || !rhs_attr->place || !rhs_attr->place) {
+                 yyerror("Invalid types or value for assignment");
                  delete lhs_attr; delete rhs_attr;
                  $$ = nullptr;
-             } else {
-                 Symbol* rhs_operand = convert_type(rhs_attr->place, lhs_attr->type);
-                 if (rhs_operand != rhs_attr->place) { std::cout << "Debug: Conversion applied for assignment RHS" << std::endl; }
-                 emit(OP_ASSIGN, lhs_attr->place->name, rhs_operand->name);
+            } else {
+                 // RHS Handling: No special check needed for rhs_attr->is_deref_lvalue.
+                 // If RHS was *p, the unary rule already put the value in rhs_attr->place (a temp).
+                 Symbol* rhs_place_to_use = rhs_attr->place;
 
-                 $$ = new ExprAttributes();
-                 $$->place = lhs_attr->place;
-                 $$->type = lhs_attr->type;
+                 TypeInfo* assign_check_type = typecheck(lhs_attr->type, rhs_attr->type, OP_ASSIGN);
+                 if (!assign_check_type) {
+                     yyerror(("Incompatible types for assignment: cannot assign " + rhs_attr->type->toString() + " to " + lhs_attr->type->toString()).c_str());
+                     delete lhs_attr; delete rhs_attr;
+                     $$ = nullptr;
+                 } else {
+                     delete assign_check_type; // Only needed for check
+                     Symbol* rhs_operand = convert_type(rhs_place_to_use, lhs_attr->type);
+                     if (rhs_operand != rhs_place_to_use) { std::cout << "Debug: Conversion applied for assignment RHS" << std::endl; }
+                     emit(OP_ASSIGN, lhs_attr->place->name, rhs_operand->name);
 
-                 std::cout << "Debug: Assignment: " << lhs_attr->place->name << " = " << rhs_operand->name << std::endl;
-                 delete lhs_attr;
-                 delete rhs_attr;
-             }
+                     // Result of assignment is the assigned value (RHS)
+                     $$ = new ExprAttributes();
+                     $$->place = rhs_operand; // Use the (potentially converted) RHS symbol
+                     $$->type = new TypeInfo(*rhs_attr->type); // Copy RHS type
+                     $$->is_deref_lvalue = false;
+                     $$->pointer_sym_for_lvalue = nullptr;
+
+                     std::cout << "Debug: Assignment: " << lhs_attr->place->name << " = " << rhs_operand->name << std::endl;
+                     delete lhs_attr;
+                     delete rhs_attr;
+                 }
+            }
         }
       }
     ;
@@ -792,30 +915,38 @@ init_declarator_list
     ;
 
 init_declarator
-    : declarator
+    : declarator // $1 is decl_attr_ptr
         {
-          /* Phase 2: Create pending symbol */
+          /* Phase 2: Create pending symbol (MODIFIED) */
           std::string var_name = $1->name;
-          Symbol* sym = insert_symbol(var_name, nullptr);
+          Symbol* sym = insert_symbol(var_name, nullptr); // Insert symbol first
           if (sym == nullptr) { yyerror(("Redeclaration of variable '" + var_name + "'").c_str()); }
           else {
+              // Store declarator attributes (pointer type chain, array dims) with symbol
+              // The base type will be applied later by apply_pending_types
+              sym->type = $1->type; // <<< Store pointer chain (or null)
+              $1->type = nullptr;   // <<< Transfer ownership to symbol
               if ($1->array_dim > 0) { sym->pending_dims.push_back($1->array_dim); }
               pending_type_symbols.push_back(sym);
               std::cout << "Debug: Created pending symbol '" << var_name << "'" << std::endl;
           }
-          $$ = $1;
+          $$ = $1; // Propagate declarator attributes (contains name, original pointer chain ref is now null)
         }
-    | declarator '=' initializer
+    | declarator '=' initializer // $1 is decl_attr_ptr, $3 is expr_attr_ptr
         {
-          /* Phase 2/3: Create pending symbol & init TAC */
+          /* Phase 2/3: Create pending symbol & init TAC (MODIFIED) */
           std::string var_name = $1->name;
           Symbol* sym = insert_symbol(var_name, nullptr);
-          ExprAttributes* init_attr = $3; /* $3 is expr_attr_ptr */
+          ExprAttributes* init_attr = $3;
 
           if (sym == nullptr) {
               yyerror(("Redeclaration of variable '" + var_name + "'").c_str());
               if (init_attr) delete init_attr;
+              // delete $1->type; // Clean up pointer chain if declarator owned it - NO, transferred below
           } else {
+              // Store declarator attributes with symbol
+              sym->type = $1->type; // <<< Store pointer chain (or null)
+              $1->type = nullptr;   // <<< Transfer ownership to symbol
               if ($1->array_dim > 0) { sym->pending_dims.push_back($1->array_dim); }
               pending_type_symbols.push_back(sym);
               std::cout << "Debug: Created pending symbol '" << var_name << "' with initializer" << std::endl;
@@ -823,12 +954,17 @@ init_declarator
               if (!init_attr) {
                   yyerror(("Invalid initializer expression for '" + var_name + "'").c_str());
               } else {
-                  /* Phase 3 Workaround: Emit raw assignment */
-                  emit(OP_ASSIGN, sym->name, init_attr->place->name);
-                  std::cout << "Debug: Emitted initializer assign (NO TYPE CHECK/CONV): " << sym->name << " = " << init_attr->place->name << std::endl;
+                  // Emit raw assignment - type check/conversion happens later in apply_pending_types
+                  if (init_attr->place) {
+                      emit(OP_ASSIGN, sym->name, init_attr->place->name);
+                      std::cout << "Debug: Emitted initializer assign (NO TYPE CHECK/CONV): " << sym->name << " = " << init_attr->place->name << std::endl;
+                  } else {
+                       yyerror(("Invalid initializer value for '" + var_name + "'").c_str());
+                  }
                   delete init_attr;
               }
           }
+          // Propagate declarator attributes (name). Pointer chain was transferred.
           $$ = $1;
         }
     ;
@@ -841,8 +977,21 @@ type_specifier /* Phase 2: Creates TypeInfo */
     | BOOL     { $$ = new TypeInfo(TYPE_BOOL, 1); }
     ;
 
-declarator /* Phase 2: Passes up DeclaratorAttributes */
-    : direct_declarator { $$ = $1; }
+declarator /* Phase 2: Passes up DeclaratorAttributes (MODIFIED) */
+    : pointer direct_declarator
+        {
+            $$ = $2; // Get name etc. from direct_declarator
+            // Store the pointer type chain built by 'pointer' rule
+            // It will be combined with the base type later by apply_pending_types
+            $$->type = $1; // $1 is TypeInfo* chain from pointer rule
+            std::cout << "Debug: Declarator with pointer chain for '" << $$->name << "'" << std::endl;
+        }
+    | direct_declarator
+        {
+            $$ = $1;
+            $$->type = nullptr; // Indicate no pointer part
+            std::cout << "Debug: Declarator without pointer chain for '" << $$->name << "'" << std::endl;
+        }
     ;
 
 direct_declarator /* Phase 2: Creates DeclaratorAttributes */
