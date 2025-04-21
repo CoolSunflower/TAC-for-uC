@@ -176,9 +176,12 @@ std::string Quad::toString() const {
     if (op == OP_ASSIGN){
         return res_str + " = " + a1_str; // Assignment
     }
+    // --- Adjusted OP_ASSIGN_DEREF handling ---
+    if (op == OP_ASSIGN_DEREF) { // e.g., t = *p
+        return res_str + " = * " + a1_str;
+    }    
     if ((op >= OP_PLUS && op <= OP_MOD) || (op >= OP_LT && op <= OP_NE) || (op == OP_AND) || (op == OP_OR) ||
-        (op == OP_UMINUS) || (op == OP_UPLUS) || (op == OP_NOT) || (op == OP_ADDR) || 
-        (op == OP_ASSIGN_DEREF) || (op == OP_INT2FLOAT) || (op == OP_FLOAT2INT) )
+        (op == OP_UMINUS) || (op == OP_UPLUS) || (op == OP_NOT) || (op == OP_ADDR) || (op == OP_INT2FLOAT) || (op == OP_FLOAT2INT) )
     {
          // Note: Phase 3 style OP_LT etc. generate assignments, handled here.
          // Phase 4 style OP_IF_LT etc. are handled below.
@@ -208,7 +211,9 @@ std::string Quad::toString() const {
     else if (op == OP_RETURN) { return op_str + (res_str.empty() ? "" : " " + res_str); }
     else if (op == OP_FUNC_BEGIN || op == OP_FUNC_END) { return op_str + " " + res_str; }
     // Pointer/Array
-    else if (op == OP_DEREF_ASSIGN) { return "*" + res_str + " = " + a1_str; }
+    else if (op == OP_DEREF_ASSIGN) { // e.g., *p = t
+        return "* " + res_str + " = " + a1_str;
+    }
     else if (op == OP_ARRAY_ACCESS) { return res_str + " = " + a1_str + "[" + a2_str + "]"; }
     else if (op == OP_ARRAY_ASSIGN) { return a1_str + "[" + a2_str + "] = " + res_str; }
 
@@ -469,6 +474,17 @@ Symbol* convert_type(Symbol* s, TypeInfo* target_type) {
         return s;
     }
 
+    // --- Add explicit check for matching pointer types (redundant if TypeInfo::operator== is correct) ---
+    // This helps diagnose if the issue is in the comparison operator vs. convert_type logic
+    if (current_type->base == TYPE_POINTER && target_type->base == TYPE_POINTER) {
+        // Recursively check pointed-to types if necessary, or assume compatible if base is POINTER
+        // For now, let's assume if both are pointers, they are compatible for this phase if typecheck passed.
+        // If TypeInfo::operator== is correct, this block might not even be reached.
+        std::cout << "Debug: convert_type sees matching pointer base types." << std::endl;
+        return s; // Treat as matching
+    }
+    // --- End explicit pointer check ---
+
     // Allowed Conversion: Integer -> Float
     if (current_type->base == TYPE_INTEGER && target_type->base == TYPE_FLOAT) {
         std::cout << "Debug: Converting " << s->name << " from integer to float." << std::endl;
@@ -478,12 +494,43 @@ Symbol* convert_type(Symbol* s, TypeInfo* target_type) {
         return temp;
     }
 
+    // --- ADDED: Allowed Conversion: Float -> Integer ---
+    if (current_type->base == TYPE_FLOAT && target_type->base == TYPE_INTEGER) {
+        std::cout << "Debug: Converting " << s->name << " from float to integer." << std::endl;
+        TypeInfo* int_type = new TypeInfo(TYPE_INTEGER, 4); // Use correct size
+        Symbol* temp = new_temp(int_type);
+        emit(OP_FLOAT2INT, temp->name, s->name);
+        return temp;
+    }
+    // --- END ADDED ---
+
     if (current_type->base == TYPE_CHAR && target_type->base == TYPE_INTEGER) {
         // No quad needs to be emitted, char is used as int directly.
         // Return the original symbol.
         std::cout << "Debug: Implicit conversion char->int for " << s->name << std::endl; // Optional Debug
         return s;
     }
+
+    // --- ADDED: Allowed Conversion? Integer -> Char (Truncation/Implicit) ---
+    // Often allowed in C, might need OP_INT2CHAR if specific instruction needed
+    if (current_type->base == TYPE_INTEGER && target_type->base == TYPE_CHAR) {
+        std::cout << "Debug: Implicit conversion int->char for " << s->name << std::endl; // Optional Debug
+        // Assuming direct use is okay, like char->int
+        return s;
+   }
+   // --- END ADDED ---
+
+    // --- ADDED: Allowed Conversion? Char -> Float (via Int) ---
+    if (current_type->base == TYPE_CHAR && target_type->base == TYPE_FLOAT) {
+        std::cout << "Debug: Converting " << s->name << " from char to float (via int)." << std::endl;
+        // Treat char as int first, then int to float
+        TypeInfo* float_type = new TypeInfo(TYPE_FLOAT, 8);
+        Symbol* temp = new_temp(float_type);
+        // Assuming OP_INT2FLOAT can handle the char implicitly treated as int
+        emit(OP_INT2FLOAT, temp->name, s->name);
+        return temp;
+    }
+    // --- END ADDED ---
 
     // If no specific conversion rule matches, it's likely a type error
     // The caller (parser action after typecheck) should handle this mismatch.

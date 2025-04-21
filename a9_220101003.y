@@ -804,85 +804,115 @@ assignment_expression
     : conditional_expression { $$ = $1; } /* Propagation */
     | unary_expression '=' assignment_expression
       {
-        /* Phase 3: Simple assignment */
         ExprAttributes* lhs_attr = $1;
         ExprAttributes* rhs_attr = $3;
 
         if (!lhs_attr || !rhs_attr) {
             yyerror("Invalid operand(s) for assignment");
-            delete lhs_attr; delete rhs_attr;
-            $$ = nullptr;
-        } 
+            delete lhs_attr; delete rhs_attr; $$ = nullptr;
+        }
+        // --- L-value Dereference Assignment (*p = ...) ---
         else if (lhs_attr->is_deref_lvalue) {
-            // Case: *p = rhs
-            if (!lhs_attr->pointer_sym_for_lvalue) { // Sanity check
-                yyerror("Internal error: L-value dereference missing pointer symbol");
+            if (!lhs_attr->pointer_sym_for_lvalue || !lhs_attr->type /* type pointed to */ || !rhs_attr->type || !rhs_attr->place) {
+                yyerror("Internal error or invalid RHS for assignment to pointer dereference");
                 delete lhs_attr; delete rhs_attr; $$ = nullptr;
-            } else if (!rhs_attr->type || !rhs_attr->place) {
-                 yyerror("Invalid RHS for assignment to pointer dereference");
-                 delete lhs_attr; delete rhs_attr; $$ = nullptr;
             } else {
-                TypeInfo* target_type = lhs_attr->type; // This is the type *p points to (held in the temp's type)
-                // Type check: Can RHS be assigned to the type pointed to by LHS?
-                TypeInfo* assign_check_type = typecheck(target_type, rhs_attr->type, OP_ASSIGN);
+                TypeInfo* target_type = lhs_attr->type; // Type *p points to (potentially deleted soon!)
+                TypeInfo* source_type = rhs_attr->type; // Type of RHS value
+
+                // Check compatibility for assignment
+                TypeInfo* assign_check_type = typecheck(target_type, source_type, OP_ASSIGN);
                 if (!assign_check_type) {
-                    yyerror(("Incompatible types for assignment to pointer dereference: cannot assign " + rhs_attr->type->toString() + " to " + target_type->toString()).c_str());
+                    yyerror(("Incompatible types for assignment to pointer dereference: cannot assign " + source_type->toString() + " to " + target_type->toString()).c_str());
+                    // target_type might be invalid here if assign_check_type was target_type and got deleted below - error message might be weird
                     delete lhs_attr; delete rhs_attr; $$ = nullptr;
                 } else {
-                    delete assign_check_type; // Only needed for check
-                    Symbol* rhs_operand = convert_type(rhs_attr->place, target_type); // Convert RHS if necessary
-                    // Emit TAC: *ptr = value (using OP_DEREF_ASSIGN: *result = arg1)
-                    // Use the original pointer symbol stored earlier
+                    // *** FIX: Only delete if typecheck created a new object ***
+                    if (assign_check_type != target_type) {
+                        delete assign_check_type;
+                    }
+                    // Now target_type is guaranteed to be valid for the rest of this block
+
+                    Symbol* rhs_operand = rhs_attr->place; // Start with original RHS symbol
+                    // Use the comparison operator which should be safe now
+                    if (*source_type != *target_type) {
+                        std::cout << "Debug: Types differ for *p= assignment (" << source_type->toString() << " vs " << target_type->toString() << "), attempting conversion." << std::endl;
+                        rhs_operand = convert_type(rhs_attr->place, target_type);
+                        if (rhs_operand != rhs_attr->place) { std::cout << "Debug: Conversion applied for *p= RHS, result in " << rhs_operand->name << std::endl; }
+                         else { std::cout << "Debug: Conversion deemed unnecessary by convert_type for *p= RHS." << std::endl; }
+                    } else {
+                         std::cout << "Debug: Types match for *p= assignment (" << source_type->toString() << "), no conversion needed." << std::endl;
+                    }
+
                     emit(OP_DEREF_ASSIGN, lhs_attr->pointer_sym_for_lvalue->name, rhs_operand->name);
 
-                    // Result of assignment expression is the assigned value (RHS)
                     $$ = new ExprAttributes();
-                    $$->place = rhs_operand; // Use the (potentially converted) RHS symbol
-                    $$->type = new TypeInfo(*rhs_attr->type); // Copy RHS type
-                    $$->is_deref_lvalue = false; // Result is not an l-value deref
+                    $$->place = rhs_operand;
+                    // Result type of assignment is usually the LHS type in C, let's reflect that
+                    $$->type = new TypeInfo(*target_type); // Create a new copy based on the (now valid) target_type
+                    $$->is_deref_lvalue = false;
                     $$->pointer_sym_for_lvalue = nullptr;
 
-                    std::cout << "Debug: Assignment *p = ... : *" << lhs_attr->pointer_sym_for_lvalue->name << " = " << rhs_operand->name << std::endl;
-                    delete lhs_attr; // Includes deleting target_type copy
+                    std::cout << "Debug: Assignment *(" << lhs_attr->pointer_sym_for_lvalue->name << ") = ... : *" << lhs_attr->pointer_sym_for_lvalue->name << " = " << rhs_operand->name << std::endl;
+
+                    // Delete the ExprAttributes container. Its type pointer (target_type) points to memory
+                    // that is either still owned by the temporary symbol (if no conversion happened in unary *)
+                    // or was created in unary * and needs separate management (potential leak here, but fixes the crash).
+                    // Let's assume the TypeInfo created in unary * is leaked for now to fix the crash.
+                    delete lhs_attr;
                     delete rhs_attr;
                 }
             }
         }
-        // --- End L-value Dereference Handling ---
-        else { // Normal assignment (variable = ...)
-            // Check if LHS is a valid L-value
+        // --- Normal Assignment (variable = ...) ---
+        else {
             if (!lhs_attr->place || lhs_attr->place->is_temp) {
                 yyerror("L-value required for assignment target");
-                delete lhs_attr; delete rhs_attr;
-                $$ = nullptr;
-            } else if (!lhs_attr->type || !rhs_attr->type || !rhs_attr->place || !rhs_attr->place) {
+                delete lhs_attr; delete rhs_attr; $$ = nullptr;
+            } else if (!lhs_attr->type || !rhs_attr->type || !lhs_attr->place || !rhs_attr->place) {
                  yyerror("Invalid types or value for assignment");
-                 delete lhs_attr; delete rhs_attr;
-                 $$ = nullptr;
+                 delete lhs_attr; delete rhs_attr; $$ = nullptr;
             } else {
-                 // RHS Handling: No special check needed for rhs_attr->is_deref_lvalue.
-                 // If RHS was *p, the unary rule already put the value in rhs_attr->place (a temp).
+                 TypeInfo* target_type = lhs_attr->type; // Type of LHS variable (owned by symbol)
+                 TypeInfo* source_type = rhs_attr->type; // Type of RHS value
                  Symbol* rhs_place_to_use = rhs_attr->place;
 
-                 TypeInfo* assign_check_type = typecheck(lhs_attr->type, rhs_attr->type, OP_ASSIGN);
+                 TypeInfo* assign_check_type = typecheck(target_type, source_type, OP_ASSIGN);
                  if (!assign_check_type) {
-                     yyerror(("Incompatible types for assignment: cannot assign " + rhs_attr->type->toString() + " to " + lhs_attr->type->toString()).c_str());
-                     delete lhs_attr; delete rhs_attr;
-                     $$ = nullptr;
+                     yyerror(("Incompatible types for assignment: cannot assign " + source_type->toString() + " to " + target_type->toString()).c_str());
+                     delete lhs_attr; delete rhs_attr; $$ = nullptr;
                  } else {
-                     delete assign_check_type; // Only needed for check
-                     Symbol* rhs_operand = convert_type(rhs_place_to_use, lhs_attr->type);
-                     if (rhs_operand != rhs_place_to_use) { std::cout << "Debug: Conversion applied for assignment RHS" << std::endl; }
+                     // *** FIX: Only delete if typecheck created a new object ***
+                     // In this case, target_type belongs to the symbol, so typecheck should *never* return target_type itself.
+                     // It should return a copy or a new type. So, deleting assign_check_type should always be safe here.
+                     // However, for consistency and safety if typecheck changes, apply the same check.
+                     if (assign_check_type != target_type) {
+                         delete assign_check_type;
+                     }
+                     // target_type is valid as it's owned by the symbol
+
+                     Symbol* rhs_operand = rhs_place_to_use;
+                     // Use the comparison operator
+                     if (*source_type != *target_type) {
+                         std::cout << "Debug: Types differ for assignment (" << source_type->toString() << " vs " << target_type->toString() << "), attempting conversion." << std::endl;
+                         rhs_operand = convert_type(rhs_place_to_use, target_type);
+                         if (rhs_operand != rhs_place_to_use) { std::cout << "Debug: Conversion applied for assignment RHS, result in " << rhs_operand->name << std::endl; }
+                         else { std::cout << "Debug: Conversion deemed unnecessary by convert_type for assignment RHS." << std::endl; }
+                     } else {
+                         std::cout << "Debug: Types match for assignment (" << source_type->toString() << "), no conversion needed." << std::endl;
+                     }
+
                      emit(OP_ASSIGN, lhs_attr->place->name, rhs_operand->name);
 
-                     // Result of assignment is the assigned value (RHS)
                      $$ = new ExprAttributes();
-                     $$->place = rhs_operand; // Use the (potentially converted) RHS symbol
-                     $$->type = new TypeInfo(*rhs_attr->type); // Copy RHS type
+                     $$->place = rhs_operand;
+                     // Result type of assignment is LHS type
+                     $$->type = new TypeInfo(*target_type); // Create a new copy based on the target_type
                      $$->is_deref_lvalue = false;
                      $$->pointer_sym_for_lvalue = nullptr;
 
                      std::cout << "Debug: Assignment: " << lhs_attr->place->name << " = " << rhs_operand->name << std::endl;
+                     // Delete containers. lhs_attr->type is owned by symbol, safe.
                      delete lhs_attr;
                      delete rhs_attr;
                  }

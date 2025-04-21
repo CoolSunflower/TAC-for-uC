@@ -72,6 +72,34 @@ struct TypeInfo {
 
     TypeInfo(base_type b = TYPE_UNKNOWN, int w = 0) : base(b), width(w), ptr_type(nullptr), return_type(nullptr) {}
     std::string toString() const;
+
+    bool operator==(const TypeInfo& other) const {
+        if (base != other.base) return false;
+        // Add more checks based on type base if necessary
+        // e.g., for pointers, compare ptr_type recursively
+        if (base == TYPE_POINTER || base == TYPE_ARRAY) {
+            if (!ptr_type && !other.ptr_type) return true;
+            if (!ptr_type || !other.ptr_type) return false;
+            return (*ptr_type == *other.ptr_type);
+        }
+        // e.g., for functions, compare return and param types
+        if (base == TYPE_FUNCTION) {
+             if (!return_type != !other.return_type) return false;
+             if (return_type && !(*return_type == *other.return_type)) return false;
+             if (param_types.size() != other.param_types.size()) return false;
+             for (size_t i = 0; i < param_types.size(); ++i) {
+                 if (!param_types[i] || !other.param_types[i] || !(*param_types[i] == *other.param_types[i])) {
+                     return false;
+                 }
+             }
+        }
+        // Add array dimension checks if needed
+        return true; // Bases match and no specific differences found
+    }
+
+    bool operator!=(const TypeInfo& other) const {
+        return !(*this == other);
+    }
 };
 
 struct Symbol {
