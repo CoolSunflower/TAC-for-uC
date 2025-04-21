@@ -1338,52 +1338,92 @@ expression_statement /* Type: stmt_attr_ptr */
     | expression ';' { if ($1) delete $1; $$ = new StmtAttributes(); } /* Cleanup expr */
     ;
 
-/* --- Phase 4 Step 6: IF / IF-ELSE Logic --- */
+
 selection_statement /* Type: stmt_attr_ptr */
     : IF '(' expression ')' M statement N %prec IFX
         { // Action for IF (...) M S1 N %prec IFX
             ExprAttributes* expr_attr = $3;
             BackpatchList* marker_M_list = $5; // List with quad index for start of 'then' statement
             StmtAttributes* stmt_attr = $6;
-            BackpatchList* marker_N_list = $7; // List from the (unneeded) GOTO emitted by N
+            BackpatchList* marker_N_list = $7; // List from the GOTO emitted by N
 
-            if (!expr_attr) { yyerror("Invalid IF cond"); $$ = new StmtAttributes(); delete marker_M_list; delete stmt_attr; delete marker_N_list;} // Cleanup N
-            else if (!expr_attr->type || expr_attr->type->base != TYPE_BOOL) { yyerror("IF cond bool"); delete expr_attr; delete marker_M_list; delete stmt_attr; delete marker_N_list; $$ = new StmtAttributes(); } // Cleanup N
+            if (!expr_attr) { yyerror("Invalid IF cond"); $$ = new StmtAttributes(); delete marker_M_list; delete stmt_attr; delete marker_N_list;}
+            else if (!expr_attr->type || expr_attr->type->base != TYPE_BOOL) { yyerror("IF cond bool"); delete expr_attr; delete marker_M_list; delete stmt_attr; delete marker_N_list; $$ = new StmtAttributes(); }
             else {
-                backpatch(*expr_attr->truelist, marker_M_list->front());
+                backpatch(*expr_attr->truelist, marker_M_list->front()); // Backpatch TRUE list to start of S1 (M)
+
                 $$ = new StmtAttributes();
-                // The nextlist for the simple IF is the merge of the expression's falselist
-                // and the statement's nextlist. The GOTO emitted by N is irrelevant here.
+                BackpatchList* final_nextlist = nullptr;
+
+                // 1. Start with expression's falselist
+                final_nextlist = expr_attr->falselist;
+                expr_attr->falselist = nullptr; // Ownership transferred
+
+                // 2. Merge the statement's nextlist (if any)
                 if (stmt_attr && stmt_attr->nextlist) {
-                    $$->nextlist = new BackpatchList(mergelist(*expr_attr->falselist, *stmt_attr->nextlist));
-                    delete stmt_attr->nextlist; // stmt_attr's list merged
-                } else {
-                    $$->nextlist = expr_attr->falselist; // Only falselist if statement has no nextlist
-                    expr_attr->falselist = nullptr;      // Avoid double delete
+                    if (final_nextlist) {
+                        // Assuming mergelist returns a new list or modifies the first argument
+                        // If it returns a new list:
+                        BackpatchList merged = mergelist(*final_nextlist, *stmt_attr->nextlist);
+                        delete final_nextlist; // Delete the old list
+                        final_nextlist = new BackpatchList(merged); // Assign the newly created merged list
+                        delete stmt_attr->nextlist; // Delete the original list from stmt_attr
+                        stmt_attr->nextlist = nullptr;
+                    } else {
+                        // If final_nextlist was null, just take ownership of stmt_attr's list
+                        final_nextlist = stmt_attr->nextlist;
+                        stmt_attr->nextlist = nullptr; // Mark ownership transferred
+                    }
                 }
-                std::cout << "Debug: Simple IF statement processed. Nextlist created." << std::endl;
+
+                // 3. Merge the list from the N marker's GOTO
+                if (marker_N_list) {
+                     if (final_nextlist) {
+                        // Assuming mergelist returns a new list or modifies the first argument
+                        // If it returns a new list:
+                        BackpatchList merged = mergelist(*final_nextlist, *marker_N_list);
+                        delete final_nextlist; // Delete the old list
+                        final_nextlist = new BackpatchList(merged); // Assign the newly created merged list
+                        delete marker_N_list; // Delete the original list from N
+                        marker_N_list = nullptr;
+                    } else {
+                        // If final_nextlist was null, just take ownership of N's list
+                        final_nextlist = marker_N_list;
+                        marker_N_list = nullptr; // Mark ownership transferred
+                    }
+                }
+
+                // Assign the final merged list (or a new empty one if all were null)
+                $$->nextlist = final_nextlist ? final_nextlist : new BackpatchList();
+
+                std::cout << "Debug: Simple IF processed. Nextlist merges falselist, stmt->nextlist, and N's list." << std::endl;
 
                 // Cleanup
                 delete expr_attr->truelist;
-                delete expr_attr->falselist; // Might be null if transferred
+                // expr_attr->falselist was transferred or null
                 delete expr_attr;
                 delete marker_M_list;
-                delete marker_N_list; // <<< Delete the list from the unnecessary N marker
-                delete stmt_attr; // stmt_attr->nextlist already handled
+                if (marker_N_list) delete marker_N_list; // Delete if not transferred
+                if (stmt_attr) {
+                    // stmt_attr->nextlist should be null if handled above
+                    if (stmt_attr->nextlist) delete stmt_attr->nextlist;
+                    delete stmt_attr;
+                }
             }
         }
     | IF '(' expression ')' M statement N ELSE M statement
         { // Action for IF ... M S1 N ELSE M S2
+            // --- KEEP THE EXISTING IF-ELSE LOGIC ---
+            // It correctly uses N's list ($7) to jump over the ELSE block.
+            // Ensure its memory management is also correct based on how mergelist works.
             ExprAttributes* expr_attr = $3;
             BackpatchList* m1_list = $5;    // M before 'then'
             StmtAttributes* s1_attr = $6;   // 'then' statement
-            BackpatchList* n_list = $7;     // List from N marker's GOTO
+            BackpatchList* n_list = $7;     // List from N marker's GOTO (jump over else)
             // $8 is ELSE
             BackpatchList* m2_list = $9;    // M before 'else'
             StmtAttributes* s2_attr = $10;  // 'else' statement
 
-            // --- Keep the error checking and backpatching/merging logic ---
-            // --- from the version that correctly used these indices ---
             if (!expr_attr) { yyerror("Invalid IF-ELSE cond"); $$ = new StmtAttributes(); delete m1_list; delete s1_attr; delete n_list; delete m2_list; delete s2_attr;}
             else if (!expr_attr->type || expr_attr->type->base != TYPE_BOOL) { yyerror("IF-ELSE cond bool"); delete expr_attr; delete m1_list; delete s1_attr; delete n_list; delete m2_list; delete s2_attr; $$ = new StmtAttributes(); }
             else {
@@ -1391,36 +1431,47 @@ selection_statement /* Type: stmt_attr_ptr */
                 backpatch(*expr_attr->falselist, m2_list->front()); // Backpatch false list to M before else ($9)
 
                 $$ = new StmtAttributes();
-                BackpatchList temp_list1, temp_list2;
+                BackpatchList* final_nextlist = nullptr;
+                BackpatchList* temp_list1_ptr = nullptr;
 
                 // Combine stmt1->nextlist ($6) and the n_list ($7)
                 if (s1_attr && s1_attr->nextlist) {
-                    temp_list1 = mergelist(*s1_attr->nextlist, *n_list);
-                    delete s1_attr->nextlist;
+                    // Assuming mergelist returns a new list
+                    BackpatchList temp = mergelist(*s1_attr->nextlist, *n_list);
+                    temp_list1_ptr = new BackpatchList(temp);
+                    delete s1_attr->nextlist; s1_attr->nextlist = nullptr;
                 } else {
-                    temp_list1 = *n_list; // Only the jump over else
+                    // If s1 has no nextlist, the list is just N's list (copy it)
+                    temp_list1_ptr = new BackpatchList(*n_list);
                 }
 
                 // Combine result with stmt2->nextlist ($10)
                 if (s2_attr && s2_attr->nextlist) {
-                    temp_list2 = mergelist(temp_list1, *s2_attr->nextlist);
-                    delete s2_attr->nextlist;
+                    // Assuming mergelist returns a new list
+                    BackpatchList temp = mergelist(*temp_list1_ptr, *s2_attr->nextlist);
+                    final_nextlist = new BackpatchList(temp);
+                    delete s2_attr->nextlist; s2_attr->nextlist = nullptr;
                 } else {
-                    temp_list2 = temp_list1;
+                    // If s2 has no nextlist, the final list is temp_list1_ptr
+                    final_nextlist = temp_list1_ptr;
+                    temp_list1_ptr = nullptr; // Transfer ownership
                 }
-                $$->nextlist = new BackpatchList(temp_list2);
+                // Delete the intermediate list if it wasn't transferred
+                if (temp_list1_ptr) delete temp_list1_ptr;
+
+                $$->nextlist = final_nextlist ? final_nextlist : new BackpatchList();
 
                 std::cout << "Debug: IF-ELSE statement processed. Nextlist created." << std::endl;
 
                 // Cleanup
                 delete expr_attr->truelist; delete expr_attr->falselist; delete expr_attr;
-                delete m1_list; delete s1_attr; // s1_attr->nextlist deleted above
-                if (n_list) delete n_list; // Could be null if ownership transferred
-                delete m2_list; delete s2_attr; // s2_attr->nextlist deleted above
+                delete m1_list;
+                if (s1_attr) { /* s1_attr->nextlist handled */ delete s1_attr; }
+                delete n_list; // Original n_list is safe to delete
+                delete m2_list;
+                if (s2_attr) { /* s2_attr->nextlist handled */ delete s2_attr; }
             }
         }
-
-
     ;
 
 iteration_statement
