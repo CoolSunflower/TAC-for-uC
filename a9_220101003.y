@@ -40,6 +40,7 @@ void yyerror(const char* s);
         TypeInfo* type = nullptr;
         BackpatchList* truelist = nullptr; // --- Phase 4 ---
         BackpatchList* falselist = nullptr;// --- Phase 4 ---
+        std::vector<std::string>* param_names = nullptr; 
 
         ExprAttributes() {}
         ~ExprAttributes() {
@@ -262,19 +263,15 @@ postfix_expression
     | postfix_expression '(' argument_expression_list ')'
         {
             // Function call with arguments
-            if (!$1) {
+            if (!$1 || !$3) {
                 yyerror("Invalid function call");
-                delete $3;
-                $$ = nullptr;
-            } else if (!$1->place) {
-                yyerror("Function identifier expected");
                 delete $1;
                 delete $3;
                 $$ = nullptr;
             } else {
                 Symbol* func_sym = $1->place;
                 
-                // Check if it's a function
+                // Check if it's a function (existing validation code)
                 if (!func_sym->type || func_sym->type->base != TYPE_FUNCTION) {
                     yyerror(("Called object '" + func_sym->name + "' is not a function").c_str());
                     delete $1;
@@ -283,31 +280,31 @@ postfix_expression
                 } else {
                     // Create result for the function call
                     $$ = new ExprAttributes();
-                    
-                    // Get return type
                     TypeInfo* return_type = func_sym->type->return_type;
                     
-                    // Count parameters passed via argument_expression_list (see that rule for details)
-                    int param_count = 0;
-                    if ($3 && $3->place) {
-                        // We store param count in the place field of argument_expression_list's attributes
-                        param_count = std::stoi($3->place->name);
+                    // Get parameter count
+                    int param_count = std::stoi($3->place->name);
+                    
+                    // Emit parameters in reverse order (C calling convention)
+                    if ($3->param_names) {
+                        for (auto it = $3->param_names->rbegin(); it != $3->param_names->rend(); ++it) {
+                            emit(OP_PARAM, *it);
+                        }
                     }
                     
+                    // Emit function call (existing code)
                     if (return_type && return_type->base != TYPE_VOID) {
-                        // Non-void function: create temporary for return value
                         $$->place = new_temp(return_type);
                         $$->type = return_type;
                         emit(OP_CALL, $$->place->name, func_sym->name, std::to_string(param_count));
                     } else {
-                        // Void function: no return value
                         $$->place = nullptr;
                         $$->type = new TypeInfo(TYPE_VOID, 0);
                         emit(OP_CALL, "", func_sym->name, std::to_string(param_count));
                     }
                     
                     std::cout << "Debug: Generated call to function '" << func_sym->name 
-                             << "' with " << param_count << " parameters" << std::endl;
+                            << "' with " << param_count << " parameters in reverse order" << std::endl;
                     
                     delete $1;
                     delete $3;
@@ -326,13 +323,21 @@ argument_expression_list
                 yyerror("Invalid function argument");
                 $$ = nullptr;
             } else {
+                // Create expressions attribute and vector for parameter names
+                $$ = new ExprAttributes();
+                $$->param_names = new std::vector<std::string>();
+                
+                // Add first parameter to the vector
+                $$->param_names->push_back($1->place->name);
+
                 // Emit parameter quad
-                emit(OP_PARAM, $1->place->name);
+                // emit(OP_PARAM, $1->place->name);
                 
                 // Count parameters (1 so far)
-                $$ = new ExprAttributes();
+                // $$ = new ExprAttributes();
                 // We'll use the place field to store parameter count (as string)
                 Symbol* count_sym = new Symbol("1");
+                count_sym->initial_value = $1->place->name; // Store first param name
                 $$->place = count_sym;
                 $$->type = $1->type; // Keep track of last arg type (might be useful)
                 
@@ -351,15 +356,18 @@ argument_expression_list
                 $$ = nullptr;
             } else {
                 // Emit parameter quad for the new argument
-                emit(OP_PARAM, $3->place->name);
-                
+                // emit(OP_PARAM, $3->place->name);
+
+                $1->param_names->push_back($3->place->name);
+
                 // Increment parameter count
                 int current_count = std::stoi($1->place->name);
                 current_count++;
-                
+                $1->place->name = std::to_string(current_count);
+
                 // Update return value
                 $$ = $1; // Reuse attributes from argument_expression_list
-                $$->place->name = std::to_string(current_count); // Update count
+                // $$->place->name = std::to_string(current_count); // Update count
                 
                 std::cout << "Debug: Added parameter #" << current_count << " to call" << std::endl;
                 
@@ -1079,7 +1087,7 @@ selection_statement /* Type: stmt_attr_ptr */
                 // Cleanup
                 delete expr_attr->truelist; delete expr_attr->falselist; delete expr_attr;
                 delete m1_list; delete s1_attr; // s1_attr->nextlist deleted above
-                delete n_list; // <<< Delete list created by N marker
+                if (n_list) delete n_list; // Could be null if ownership transferred
                 delete m2_list; delete s2_attr; // s2_attr->nextlist deleted above
             }
         }
