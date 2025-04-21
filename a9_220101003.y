@@ -445,12 +445,14 @@ unary_expression
                        << operand_attr->place->name << ". Storing pointer '"
                        << $$->pointer_sym_for_lvalue->name << "' for potential L-value use." << std::endl;
 
-             // Don't delete operand_attr->place as it's stored in pointer_sym_for_lvalue
-             // Delete the rest of the operand attributes
-             delete operand_attr->type; // Delete the pointer TypeInfo
-             // delete operand_attr->truelist; // Handle lists if applicable
-             // delete operand_attr->falselist;
-             delete operand_attr; // Delete the container struct
+             // Don't delete operand_attr->place (it's 'p', owned by symbol table)
+             // *** FIX: Do NOT delete operand_attr->type if it points to a symbol's type ***
+             // delete operand_attr->type; // <<< REMOVE THIS LINE
+             // Only delete operand_attr->type if it was created dynamically within operand_attr itself,
+             // which isn't the case when operand_attr comes from a primary_expression IDENTIFIER.
+
+             // Delete the container struct for the original 'p' expression
+             delete operand_attr;
          }
       }
     | unary_operator unary_expression %prec UMINUS
