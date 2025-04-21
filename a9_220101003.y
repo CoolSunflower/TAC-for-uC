@@ -106,7 +106,7 @@ void yyerror(const char* s);
 %type <list_ptr> M N // Markers return BackpatchList*
 %type <stmt_attr_ptr> statement compound_statement selection_statement iteration_statement
 %type <stmt_attr_ptr> expression_statement jump_statement block_item block_item_list
-%type <stmt_attr_ptr> block_item_list_opt
+%type <stmt_attr_ptr> block_item_list_opt function_definition
 /* --- End Phase 4 --- */
 
 /* Operator Precedence and Associativity */
@@ -211,17 +211,161 @@ primary_expression
       }
     ;
 
+/* --- Function Call Processing --- */
 postfix_expression
-    : primary_expression { $$ = $1; } /* Propagation */
+    : primary_expression { $$ = $1; }
     | postfix_expression '[' expression ']' { /* Phase 7 */ $$ = nullptr; delete $1; delete $3; }
-    | postfix_expression '(' ')'     { /* Phase 6 */ $$ = nullptr; delete $1; }
-    | postfix_expression '(' argument_expression_list ')' { /* Phase 6 */ $$ = nullptr; delete $1; delete $3; }
+    | postfix_expression '(' ')'
+        {
+            // Function call with no arguments
+            if (!$1) {
+                yyerror("Invalid function call");
+                $$ = nullptr;
+            } else if (!$1->place) {
+                yyerror("Function identifier expected");
+                delete $1;
+                $$ = nullptr;
+            } else {
+                Symbol* func_sym = $1->place;
+                
+                // Check if it's a function
+                if (!func_sym->type || func_sym->type->base != TYPE_FUNCTION) {
+                    yyerror(("Called object '" + func_sym->name + "' is not a function").c_str());
+                    delete $1;
+                    $$ = nullptr;
+                } else {
+                    // Create result for the function call
+                    $$ = new ExprAttributes();
+                    
+                    // Get return type
+                    TypeInfo* return_type = func_sym->type->return_type;
+                    
+                    if (return_type && return_type->base != TYPE_VOID) {
+                        // Non-void function: create temporary for return value
+                        $$->place = new_temp(return_type);
+                        $$->type = return_type;
+                        emit(OP_CALL, $$->place->name, func_sym->name, "0"); // 0 parameters
+                    } else {
+                        // Void function: no return value
+                        $$->place = nullptr;
+                        $$->type = new TypeInfo(TYPE_VOID, 0);
+                        emit(OP_CALL, "", func_sym->name, "0"); // 0 parameters
+                    }
+                    
+                    std::cout << "Debug: Generated call to function '" << func_sym->name 
+                             << "' with 0 parameters" << std::endl;
+                    
+                    delete $1;
+                }
+            }
+        }
+    | postfix_expression '(' argument_expression_list ')'
+        {
+            // Function call with arguments
+            if (!$1) {
+                yyerror("Invalid function call");
+                delete $3;
+                $$ = nullptr;
+            } else if (!$1->place) {
+                yyerror("Function identifier expected");
+                delete $1;
+                delete $3;
+                $$ = nullptr;
+            } else {
+                Symbol* func_sym = $1->place;
+                
+                // Check if it's a function
+                if (!func_sym->type || func_sym->type->base != TYPE_FUNCTION) {
+                    yyerror(("Called object '" + func_sym->name + "' is not a function").c_str());
+                    delete $1;
+                    delete $3;
+                    $$ = nullptr;
+                } else {
+                    // Create result for the function call
+                    $$ = new ExprAttributes();
+                    
+                    // Get return type
+                    TypeInfo* return_type = func_sym->type->return_type;
+                    
+                    // Count parameters passed via argument_expression_list (see that rule for details)
+                    int param_count = 0;
+                    if ($3 && $3->place) {
+                        // We store param count in the place field of argument_expression_list's attributes
+                        param_count = std::stoi($3->place->name);
+                    }
+                    
+                    if (return_type && return_type->base != TYPE_VOID) {
+                        // Non-void function: create temporary for return value
+                        $$->place = new_temp(return_type);
+                        $$->type = return_type;
+                        emit(OP_CALL, $$->place->name, func_sym->name, std::to_string(param_count));
+                    } else {
+                        // Void function: no return value
+                        $$->place = nullptr;
+                        $$->type = new TypeInfo(TYPE_VOID, 0);
+                        emit(OP_CALL, "", func_sym->name, std::to_string(param_count));
+                    }
+                    
+                    std::cout << "Debug: Generated call to function '" << func_sym->name 
+                             << "' with " << param_count << " parameters" << std::endl;
+                    
+                    delete $1;
+                    delete $3;
+                }
+            }
+        }
     | postfix_expression ARROW IDENTIFIER { /* Phase ? */ delete[] $3; $$ = nullptr; delete $1; }
     ;
 
-argument_expression_list /* Placeholder */
-    : assignment_expression { $$ = $1; }
-    | argument_expression_list ',' assignment_expression { delete $1; $$ = $3; }
+/* Revised for parameter passing */
+argument_expression_list
+    : assignment_expression
+        {
+            // First argument
+            if (!$1) {
+                yyerror("Invalid function argument");
+                $$ = nullptr;
+            } else {
+                // Emit parameter quad
+                emit(OP_PARAM, $1->place->name);
+                
+                // Count parameters (1 so far)
+                $$ = new ExprAttributes();
+                // We'll use the place field to store parameter count (as string)
+                Symbol* count_sym = new Symbol("1");
+                $$->place = count_sym;
+                $$->type = $1->type; // Keep track of last arg type (might be useful)
+                
+                std::cout << "Debug: Added first parameter to call" << std::endl;
+                
+                delete $1; // Clean up original expression
+            }
+        }
+    | argument_expression_list ',' assignment_expression
+        {
+            // Additional argument
+            if (!$1 || !$3) {
+                yyerror("Invalid function argument");
+                delete $1;
+                delete $3;
+                $$ = nullptr;
+            } else {
+                // Emit parameter quad for the new argument
+                emit(OP_PARAM, $3->place->name);
+                
+                // Increment parameter count
+                int current_count = std::stoi($1->place->name);
+                current_count++;
+                
+                // Update return value
+                $$ = $1; // Reuse attributes from argument_expression_list
+                $$->place->name = std::to_string(current_count); // Update count
+                
+                std::cout << "Debug: Added parameter #" << current_count << " to call" << std::endl;
+                
+                delete $3; // Clean up the new expression
+            }
+        }
     ;
 
 unary_expression
@@ -723,10 +867,70 @@ direct_declarator /* Phase 2: Creates DeclaratorAttributes */
     ;
 
 /* Parameters deferred */
-parameter_list : parameter_declaration { /* delete $1; Phase 6 */ } | parameter_list ',' parameter_declaration { /* delete $1; delete $3; Phase 6 */ } ;
-parameter_declaration : type_specifier declarator { delete $1; delete $2; /* Phase 6 */ } ;
-identifier_list_opt : /* empty */ | identifier_list ;
-identifier_list : IDENTIFIER { delete[] $1; } | identifier_list ',' IDENTIFIER { delete[] $3; } ;
+/* --- Parameter List Processing --- */
+parameter_list
+    : parameter_declaration
+        {
+            // First parameter - nothing to propagate up
+        }
+    | parameter_list ',' parameter_declaration
+        {
+            // Additional parameter - nothing to propagate up
+        }
+    ;
+
+parameter_declaration
+    : type_specifier declarator
+        {
+            // Process parameter and add to current function's scope
+            if (!current_symbol_table) {
+                yyerror("No active scope for parameter declaration");
+            } else {
+                std::string param_name = $2->name;
+                Symbol* param_sym = insert_symbol(param_name, $1); // Transfer ownership of type
+                
+                if (param_sym) {
+                    // If we have a function context, add parameter info to function type
+                    if (current_function && current_function->type) {
+                        TypeInfo* param_type_copy = new TypeInfo($1->base, $1->width);
+                        current_function->type->param_types.push_back(param_type_copy);
+                        std::cout << "Debug: Added parameter '" << param_name << "' to function '" 
+                                << current_function->name << "'" << std::endl;
+                    }
+                    
+                    // Handle array parameters if needed
+                    if ($2->array_dim > 0) {
+                        // For Phase 6, treat arrays as pointers in parameters
+                        if (param_sym->type) {
+                            TypeInfo* array_type = new TypeInfo(TYPE_POINTER, 8);
+                            array_type->ptr_type = param_sym->type; // Original type becomes pointed-to type
+                            param_sym->type = array_type;
+                        }
+                    }
+                } else {
+                    delete $1; // Clean up type if insertion failed
+                }
+            }
+            
+            delete $2; // Clean up declarator
+        }
+    ;
+
+identifier_list_opt
+    : /* empty */ { /* Nothing to do */ }
+    | identifier_list
+    ;
+
+identifier_list
+    : IDENTIFIER
+        {
+            delete[] $1; // Clean up
+        }
+    | identifier_list ',' IDENTIFIER
+        {
+            delete[] $3; // Clean up
+        }
+    ;
 
 initializer /* Phase 3: Handles expression */
     : assignment_expression { $$ = $1; }
@@ -973,32 +1177,123 @@ expression_opt /* Type: expr_attr_ptr */
     | expression  { $$ = $1; }
     ;
 
-jump_statement /* Type: stmt_attr_ptr */
-    // --- Actions to be added in Phase 6 ---
-    : RETURN ';' { $$ = new StmtAttributes(); }
-    | RETURN expression ';' { if($2) delete $2; $$ = new StmtAttributes(); }
+/* --- Return Statement Processing --- */
+jump_statement
+    : RETURN ';'
+        {
+            // Return with no value
+            $$ = new StmtAttributes();
+            
+            // Check if current function expects a return value
+            if (current_function && current_function->type && 
+                current_function->type->return_type && 
+                current_function->type->return_type->base != TYPE_VOID) {
+                yyerror("Return with no value in function returning non-void");
+            }
+            
+            emit(OP_RETURN, "");
+            std::cout << "Debug: Generated void return" << std::endl;
+        }
+    | RETURN expression ';'
+        {
+            // Return with value
+            $$ = new StmtAttributes();
+            
+            if (!$2) {
+                yyerror("Invalid return expression");
+            } else if (!current_function) {
+                yyerror("Return statement outside of function");
+                delete $2;
+            } else {
+                TypeInfo* expected_type = nullptr;
+                if (current_function->type) {
+                    expected_type = current_function->type->return_type;
+                }
+                
+                if (!expected_type) {
+                    yyerror("Function return type not specified");
+                    delete $2;
+                } else if (expected_type->base == TYPE_VOID) {
+                    yyerror("Void function cannot return a value");
+                    delete $2;
+                } else {
+                    // Type check and conversion if needed
+                    Symbol* return_value = $2->place;
+                    
+                    // Convert return value to expected type if needed
+                    Symbol* converted_value = convert_type(return_value, expected_type);
+                    
+                    // Emit return quad with (possibly converted) value
+                    emit(OP_RETURN, converted_value->name);
+                    
+                    std::cout << "Debug: Generated return with value " << converted_value->name << std::endl;
+                    
+                    delete $2;
+                }
+            }
+        }
     ;
 
 /* 4. External Definitions */
 translation_unit : external_declaration | translation_unit external_declaration ;
 external_declaration : function_definition | declaration ;
 
-function_definition /* Phase 2: Basic handling */
-    : type_specifier declarator
-        { /* Action before compound statement */
+function_definition
+    : type_specifier declarator 
+        { 
+            // Create function symbol with proper return type and name from declarator
             std::string func_name = $2->name;
-            TypeInfo* func_type = new TypeInfo(TYPE_FUNCTION);
-            func_type->return_type = $1; /* $1 is TypeInfo* */
-            Symbol* func_sym = insert_symbol(func_name, func_type);
-            if (func_sym == nullptr) { yyerror(("Redeclaration of function '" + func_name + "'").c_str()); }
-            else { std::cout << "Debug: Inserted function symbol '" << func_name << "'" << std::endl; }
+            Symbol* func_sym = lookup_symbol(func_name, false);
+            
+            if (!func_sym) {
+                func_sym = insert_symbol(func_name, new TypeInfo(TYPE_FUNCTION, 0));
+                if (func_sym) {
+                    // Set function return type based on type_specifier
+                    func_sym->type->return_type = $1; // Transfer ownership of $1
+                    std::cout << "Debug: Created function symbol '" << func_name << "' with return type " 
+                             << func_sym->type->return_type->toString() << std::endl;
+                } else {
+                    delete $1; // Clean up if we couldn't create the function symbol
+                }
+            } else {
+                // Function already exists - error or allow redefinition?
+                yyerror(("Redefinition of function '" + func_name + "'").c_str());
+                delete $1;
+            }
+            
+            // Store function being processed as global
             current_function = func_sym;
-            delete $2; /* Cleanup declarator attributes */
+            
+            // Create nested scope for function body
+            SymbolTable* func_scope = begin_scope();
+            if (func_sym) {
+                func_sym->nested_table = func_scope;
+            }
+            
+            // Emit function begin marker
+            emit(OP_FUNC_BEGIN, func_name);
+            
+            delete $2; // Clean up declarator
         }
-      compound_statement /* Enters/exits function body scope */
-        { /* Action after compound statement */
-            if (current_function && current_function->nested_table == nullptr) { /* Link scope? */ }
-            current_function = nullptr;
+        compound_statement
+        {
+            // Handle function end
+            if (current_function) {
+                // Check if function with non-void return type has a return statement
+                if (current_function->type && current_function->type->return_type && 
+                    current_function->type->return_type->base != TYPE_VOID) {
+                    // We could warn about missing return, but that's a semantic warning not error
+                }
+                
+                // Emit function end marker
+                emit(OP_FUNC_END, current_function->name);
+                
+                // Reset current_function as we're done processing it
+                current_function = nullptr;
+            }
+            
+            // End_scope called by compound_statement already
+            $$ = $4; // Explicit cast to help Bison understand; // Propagate statement attributes
         }
     ;
 
