@@ -1,0 +1,190 @@
+Op             Arg1           Arg2           Result         
+------------------------------------------------------------
+func_begin                                   main           
+=              10                            t0             
+=              t0                            a              
+=              5                             t1             
+=              t1                            b              
+=              1                             t2             
+=              t2                            x              
+=              0                             t3             
+=              t3                            y              
+=              3.140000                      t4             
+=              t4                            f1             
+=              2.000000                      t5             
+=              t5                            f2             
+=              0                             t6             
+=              t6                            result_simple_if
+=              0                             t7             
+=              t7                            result_ifelse1 
+=              0                             t8             
+=              t8                            result_ifelse2 
+=              0                             t9             
+=              t9                            result_and_shortcircuit
+=              0                             t10            
+=              t10                           result_and_noskip
+=              0                             t11            
+=              t11                           result_or_shortcircuit
+=              0                             t12            
+=              t12                           result_or_noskip
+=              0                             t13            
+=              t13                           result_not     
+=              0                             t14            
+=              t14                           result_nested  
+=              0                             t15            
+=              t15                           result_dangling
+=              0                             t16            
+=              t16                           result_complex 
+=              0                             t17            
+=              t17                           result_seq1    
+=              0                             t18            
+=              t18                           result_seq2    
+=              0                             t19            
+=              t19                           side_effect_and
+=              0                             t20            
+=              t20                           side_effect_or 
+if>            a              b              45             
+goto                                         48             
+=              1                             t21            
+=              t21                           result_simple_if
+goto                                         48             
+if<            f1             f2             50             
+goto                                         53             
+=              99                            t22            
+=              t22                           result_simple_if
+goto                                         53             
+=              10                            t23            
+if==           a              t23            56             
+goto                                         59             
+=              100                           t24            
+=              t24                           result_ifelse1 
+goto                                         61             
+=              199                           t25            
+=              t25                           result_ifelse1 
+if>=           b              a              63             
+goto                                         66             
+=              299                           t26            
+=              t26                           result_ifelse2 
+goto                                         68             
+=              200                           t27            
+=              t27                           result_ifelse2 
+=              0                             t28            
+=              t28                           side_effect_and
+if<            a              b              72             
+goto                                         80             
+=              1                             t29            
+=              t29                           side_effect_and
+=              1                             t30            
+if==           t29            t30            77             
+goto                                         80             
+=              51                            t31            
+=              t31                           result_and_shortcircuit
+goto                                         80             
+=              0                             t32            
+=              t32                           side_effect_and
+if>            a              b              84             
+goto                                         92             
+=              1                             t33            
+=              t33                           side_effect_and
+=              0                             t34            
+if==           t33            t34            89             
+goto                                         92             
+=              61                            t35            
+=              t35                           result_and_noskip
+goto                                         92             
+=              0                             t36            
+=              t36                           side_effect_or 
+=              10                            t37            
+if==           a              t37            102            
+goto                                         97             
+=              1                             t38            
+=              t38                           side_effect_or 
+=              1                             t39            
+if==           t38            t39            102            
+goto                                         105            
+=              71                            t40            
+=              t40                           result_or_shortcircuit
+goto                                         105            
+=              0                             t41            
+=              t41                           side_effect_or 
+=              10                            t42            
+if!=           a              t42            115            
+goto                                         110            
+=              1                             t43            
+=              t43                           side_effect_or 
+=              1                             t44            
+if==           t43            t44            115            
+goto                                         118            
+=              81                            t45            
+=              t45                           result_or_noskip
+goto                                         118            
+if<            a              b              123            
+goto                                         120            
+=              91                            t46            
+=              t46                           result_not     
+goto                                         123            
+=              10                            t47            
+if==           a              t47            126            
+goto                                         138            
+=              5                             t48            
+if==           b              t48            129            
+goto                                         132            
+=              101                           t49            
+=              t49                           result_nested  
+goto                                         134            
+=              102                           t50            
+=              t50                           result_nested  
+=              1000                          t51            
++              result_nested  t51            t52            
+=              t52                           result_nested  
+goto                                         138            
+=              1                             t53            
+if==           x              t53            141            
+goto                                         150            
+=              1                             t54            
+if==           y              t54            144            
+goto                                         147            
+=              111                           t55            
+=              t55                           result_dangling
+goto                                         150            
+=              112                           t56            
+=              t56                           result_dangling
+goto                                         150            
+if>            a              b              152            
+goto                                         155            
+=              0                             t57            
+if!=           b              t57            157            
+goto                                         155            
+if<=           f1             f2             160            
+goto                                         157            
+=              121                           t58            
+=              t58                           result_complex 
+goto                                         162            
+=              122                           t59            
+=              t59                           result_complex 
+=              1                             t60            
+=              t60                           result_seq1    
+=              0                             t61            
+if<            a              t61            167            
+goto                                         170            
+=              999                           t62            
+=              t62                           result_seq1    
+goto                                         170            
+=              10                            t63            
++              result_seq1    t63            t64            
+=              t64                           result_seq1    
+=              100                           t65            
+=              t65                           result_seq2    
+=              0                             t66            
+if>            b              t66            178            
+goto                                         182            
+=              5                             t67            
++              result_seq2    t67            t68            
+=              t68                           result_seq2    
+goto                                         184            
+=              0                             t69            
+=              t69                           result_seq2    
+=              1000                          t70            
++              result_seq2    t70            t71            
+=              t71                           result_seq2    
+func_end                                     main           

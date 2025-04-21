@@ -1,0 +1,14 @@
+Op             Arg1           Arg2           Result         
+------------------------------------------------------------
+func_begin                                   main           
+=              10                            t0             
+=              t0                            local_x        
+=              5                             t1             
+if>            local_x        t1             6              
+goto                                         7              
+goto                                         7              
+=              0                             t2             
+return                                       t2             
+func_end                                     main           
+func_begin                                   utility_func   
+func_end                                     utility_func   

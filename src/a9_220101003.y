@@ -9,6 +9,7 @@
 #include <list>
 #include <sstream> /* For converting constants to string */
 #include <utility> /* For std::swap */
+#include <libgen.h> // Required for basename()
 
 /* External declarations */
 extern int yylex();
@@ -1719,12 +1720,20 @@ int main(int argc, char** argv) {
     if (!yyin) { std::cerr << "Error: Cannot open input file: " << argv[1] << std::endl; return 1; }
 
     /* Lexer Output File Handling */
-    char lex_filename[FILENAME_MAX];
-    strncpy(lex_filename, argv[1], FILENAME_MAX - 10); lex_filename[FILENAME_MAX - 10] = '\0';
-    strcat(lex_filename, ".lex.out");
-    lex_output = fopen(lex_filename, "w");
-    if (!lex_output) { std::cerr << "Warning: Cannot create lexer output file: " << lex_filename << std::endl; }
-    else { std::cout << "Lexical analysis output will be written to " << lex_filename << std::endl; fprintf(lex_output, "LEXICAL ANALYSIS FOR FILE: %s\n---\n", argv[1]); }
+    // --- MODIFIED PATH CONSTRUCTION ---
+    std::string input_path_str = argv[1];
+    char* input_path_cstr = strdup(input_path_str.c_str()); // Create a modifiable copy for basename
+    std::string base_name = basename(input_path_cstr); // Extract filename (e.g., test.mc)
+    free(input_path_cstr); // Free the duplicated string
+
+    std::string output_dir = "output/"; // Define output directory
+
+    std::string lex_filename_str = output_dir + base_name + ".lex.out";
+    // --- END MODIFIED PATH CONSTRUCTION ---
+
+    lex_output = fopen(lex_filename_str.c_str(), "w");
+    if (!lex_output) { std::cerr << "Warning: Cannot create lexer output file: " << lex_filename_str << std::endl; }
+    else { std::cout << "Lexical analysis output will be written to " << lex_filename_str << std::endl; fprintf(lex_output, "LEXICAL ANALYSIS FOR FILE: %s\n---\n", base_name.c_str()); }
 
     /* Initialization & Parsing */
     initialize_symbol_tables();
@@ -1735,15 +1744,15 @@ int main(int argc, char** argv) {
     /* Post-Parsing Output */
     if (parse_result == 0) {
         std::cout << "Parsing completed successfully." << std::endl;
-        print_symbol_table(global_symbol_table);
+        // print_symbol_table(global_symbol_table); // Optional: Print symbol table to console or file
 
-        // Print Three Address Code to standard output
-        std::string tac_filename = std::string(argv[1]) + ".tac";
-        print_tac(tac_filename);
+        // --- MODIFIED PATH CONSTRUCTION ---
+        std::string tac_filename_str = output_dir + base_name + ".tac";
+        std::string quad_filename_str = output_dir + base_name + ".quad";
+        // --- END MODIFIED PATH CONSTRUCTION ---
 
-        // Construct quad filename and print quads to file
-        std::string quad_filename = std::string(argv[1]) + ".quad";
-        print_quads(quad_filename);
+        print_tac(tac_filename_str); // Pass the full path
+        print_quads(quad_filename_str); // Pass the full path
 
     } else { std::cerr << "Parsing failed." << std::endl; }
 

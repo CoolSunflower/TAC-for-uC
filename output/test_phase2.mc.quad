@@ -1,0 +1,12 @@
+Op             Arg1           Arg2           Result         
+------------------------------------------------------------
+=              3                             t0             
+=              t0                            var1           
+=              4                             t1             
+=              t1                            var3           
+func_begin                                   testFunction   
+func_end                                     testFunction   
+func_begin                                   anotherFunction
+func_end                                     anotherFunction
+func_begin                                   main           
+func_end                                     main           

@@ -3,6 +3,7 @@
 #include <iomanip> // For std::setw
 #include <fstream> // For file output
 #include <string>  // For filename manipulation
+#include <libgen.h> // Required for basename()
 
 // --- Define Global Variables ---
 std::vector<Quad> quad_list;

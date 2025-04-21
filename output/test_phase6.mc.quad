@@ -1,0 +1,92 @@
+Op             Arg1           Arg2           Result         
+------------------------------------------------------------
+func_begin                                   printHello     
+func_end                                     printHello     
+func_begin                                   getZero        
+=              0                             t0             
+return                                       t0             
+func_end                                     getZero        
+func_begin                                   add            
++              a              b              t1             
+=              t1                            result         
+return                                       result         
+func_end                                     add            
+func_begin                                   average        
++              x              y              t2             
+=              t2                            sum            
+=              2.000000                      t3             
+/              sum            t3             t4             
+return                                       t4             
+func_end                                     average        
+func_begin                                   intToFloat     
+int2float      value                         t5             
+return                                       t5             
+func_end                                     intToFloat     
+func_begin                                   calculate      
++              a              c              t6             
+return                                       t6             
+func_end                                     calculate      
+func_begin                                   max            
+if>            x              y              29             
+goto                                         31             
+return                                       x              
+goto                                         31             
+return                                       y              
+func_end                                     max            
+func_begin                                   factorial      
+=              1                             t7             
+if<=           n              t7             37             
+goto                                         40             
+=              1                             t8             
+return                                       t8             
+goto                                         40             
+=              1                             t9             
+-              n              t9             t10            
+param                                        t10            
+call           factorial      1              t11            
+*              n              t11            t12            
+return                                       t12            
+func_end                                     factorial      
+func_begin                                   main           
+call           printHello     0                             
+call           getZero        0              t13            
+=              t13                           a              
+=              10                            t14            
+=              20                            t15            
+param                                        t14            
+param                                        t15            
+call           add            2              t16            
+=              t16                           b              
+=              1.500000                      t17            
+=              2.500000                      t18            
+param                                        t17            
+param                                        t18            
+call           average        2              t19            
+=              t19                           f              
+=              5                             t20            
+=              3                             t21            
+param                                        t20            
+param                                        t21            
+call           max            2              t22            
+=              4                             t23            
+param                                        t23            
+call           factorial      1              t24            
+param                                        t22            
+param                                        t24            
+call           add            2              t25            
+=              t25                           a              
+=              42                            t26            
+param                                        t26            
+call           intToFloat     1              t27            
+=              t27                           f              
+=              10                            t28            
+=              3.140000                      t29            
+=              65                            t30            
+param                                        t28            
+param                                        t29            
+param                                        t30            
+call           calculate      3              t31            
+=              t31                           b              
+=              0                             t32            
+return                                       t32            
+func_end                                     main           
