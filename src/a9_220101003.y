@@ -1,5 +1,4 @@
 %{
-/* Parser for micro C language (Phase 3 - Expression TAC Generation - CORRECTED v4 - NO MACRO) */
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -7,16 +6,16 @@
 #include <string>
 #include <vector>
 #include <list>
-#include <sstream> /* For converting constants to string */
-#include <utility> /* For std::swap */
-#include <libgen.h> // Required for basename()
+#include <sstream> 
+#include <utility> 
+#include <libgen.h> 
 
 /* External declarations */
 extern int yylex();
 extern FILE* yyin;
 extern int line_no;
 extern char* yytext;
-extern FILE* lex_output; /* Keep for logging */
+extern FILE* lex_output;
 
 /* Function Prototypes */
 void yyerror(const char* s);
@@ -40,11 +39,11 @@ void yyerror(const char* s);
     struct ExprAttributes {
         Symbol* place = nullptr;
         TypeInfo* type = nullptr;
-        BackpatchList* truelist = nullptr; // --- Phase 4 ---
-        BackpatchList* falselist = nullptr;// --- Phase 4 ---
+        BackpatchList* truelist = nullptr; 
+        BackpatchList* falselist = nullptr;
         std::vector<std::string>* param_names = nullptr; 
-        bool is_deref_lvalue = false;    // Still useful to know if it *originated* from a deref
-        Symbol* pointer_sym_for_lvalue = nullptr; // <<< ADD: Stores the original pointer symbol (e.g., 'p' in *p)
+        bool is_deref_lvalue = false;    // Still useful to know if it originated from a deref
+        Symbol* pointer_sym_for_lvalue = nullptr; // Stores the original pointer symbol (e.g., 'p' in *p)
 
         // --- Additions for Array L-values ---
         bool is_array_lvalue = false;
@@ -52,23 +51,15 @@ void yyerror(const char* s);
         Symbol* array_offset_sym = nullptr; // Symbol for the calculated offset temporary
 
         ExprAttributes() {}
-        ~ExprAttributes() {
-            // Cleanup handled explicitly in parser rules where ownership ends
-            // delete truelist; // NO!
-            // delete falselist; // NO!
-         }
+        ~ExprAttributes() {}
     };
 
     /* Structure for Statement Attributes (Phase 4) */
     struct StmtAttributes {
         BackpatchList* nextlist = nullptr;
         StmtAttributes() {}
-        ~StmtAttributes() {
-             // Cleanup handled explicitly in parser rules
-             // delete nextlist; // NO!
-        }
+        ~StmtAttributes() {}
     };
-
 }
 
 /* Bison Declarations */
@@ -77,7 +68,7 @@ void yyerror(const char* s);
     int ival;
     float fval;
     char cval;
-    char* sval; /* From lexer, MUST delete[] */
+    char* sval; 
 
     Symbol* sym_ptr;
     TypeInfo* type_ptr;
@@ -111,29 +102,27 @@ void yyerror(const char* s);
 %type <expr_attr_ptr> initializer argument_expression_list
 %type <ival> unary_operator
 %type <expr_attr_ptr> expression_opt
-/* --- End Phase 3 --- */
 
 /* --- Phase 4: %type for markers and statements --- */
 %type <list_ptr> M N // Markers return BackpatchList*
 %type <stmt_attr_ptr> statement compound_statement selection_statement iteration_statement
 %type <stmt_attr_ptr> expression_statement jump_statement block_item block_item_list
 %type <stmt_attr_ptr> block_item_list_opt function_definition
-/* --- End Phase 4 --- */
 
-%type <type_ptr> pointer /* <<< Add type for pointer chain */
-%type <param_list_ptr> parameter_list // <<< CHANGE/ADD
-%type <sym_ptr> parameter_declaration // <<< CHANGE/ADD
-%type <param_list_ptr> identifier_list_opt identifier_list // <<< Placeholder if needed later
+%type <type_ptr> pointer 
+%type <param_list_ptr> parameter_list 
+%type <sym_ptr> parameter_declaration
+%type <param_list_ptr> identifier_list_opt identifier_list 
 
 /* Operator Precedence and Associativity */
 %right '='
 %left OR
 %left AND
-%nonassoc '<' '>' LE GE EQ NE /* Boolean comparison */
+%nonassoc '<' '>' LE GE EQ NE 
 %left '+' '-'
 %left '*' '/' '%'
-%right '!' /* Logical NOT (unary) */
-%precedence UMINUS /* Placeholder for unary minus precedence */
+%right '!' 
+%precedence UMINUS 
 
 /* Dangling else */
 %nonassoc IFX
@@ -143,8 +132,6 @@ void yyerror(const char* s);
 %start translation_unit
 
 %%
-
-/* Grammar Rules (Phase 4 - Complete) */
 
 /* --- Phase 4: Marker Non-terminals --- */
 M   : /* empty */
@@ -158,7 +145,6 @@ N   : /* empty */
             std::cout << "Debug: Marker N created list pointing to GOTO at quad " << get_next_quad_index()-1 << std::endl;
         }
     ;
-/* --- End Phase 4 --- */
 
 /* --- Add pointer rule --- */
 pointer /* Builds a chain of TypeInfo for pointers, returns the head */
@@ -176,12 +162,9 @@ pointer /* Builds a chain of TypeInfo for pointers, returns the head */
         }
     ;
 
-/* Grammar Rules (Phase 3 - Expression TAC - CORRECTED v4 - NO MACRO) */
-
 /* 1. Expressions */
 primary_expression
     : IDENTIFIER {
-        /* Phase 3: Lookup identifier */
         Symbol* sym = lookup_symbol($1, true);
         if (!sym) {
             yyerror(("Undeclared identifier '" + std::string($1) + "'").c_str());
@@ -198,47 +181,47 @@ primary_expression
         delete[] $1;
       }
     | INT_CONSTANT {
-        /* Phase 3: Handle integer constant */
         TypeInfo* const_type = new TypeInfo(TYPE_INTEGER, 4);
         Symbol* temp = new_temp(const_type);
         std::string const_str = std::to_string($1);
         emit(OP_ASSIGN, temp->name, const_str);
+
         $$ = new ExprAttributes();
         $$->place = temp;
         $$->type = const_type;
         std::cout << "Debug: Primary INT_CONSTANT " << const_str << std::endl;
       }
     | FLOAT_CONSTANT {
-        /* Phase 3: Handle float constant */
         TypeInfo* const_type = new TypeInfo(TYPE_FLOAT, 8); /* A9 spec */
         Symbol* temp = new_temp(const_type);
         std::ostringstream oss;
         oss << std::fixed << $1;
         std::string const_str = oss.str();
         emit(OP_ASSIGN, temp->name, const_str);
+
         $$ = new ExprAttributes();
         $$->place = temp;
         $$->type = const_type;
-         std::cout << "Debug: Primary FLOAT_CONSTANT " << const_str << std::endl;
+        std::cout << "Debug: Primary FLOAT_CONSTANT " << const_str << std::endl;
       }
     | CHAR_CONSTANT {
-         /* Phase 3: Handle char constant */
          TypeInfo* const_type = new TypeInfo(TYPE_CHAR, 1);
          Symbol* temp = new_temp(const_type);
          std::string const_str = std::to_string(static_cast<int>($1));
          emit(OP_ASSIGN, temp->name, const_str);
+
          $$ = new ExprAttributes();
          $$->place = temp;
          $$->type = const_type;
          std::cout << "Debug: Primary CHAR_CONSTANT " << const_str << std::endl;
       }
     | STRING_LITERAL {
-         std::cout << "Debug: Primary STRING_LITERAL (ignored for TAC)" << std::endl;
+         std::cout << "Debug: Primary STRING_LITERAL (ignored)" << std::endl;
          delete[] $1;
          $$ = nullptr;
       }
     | '(' expression ')' {
-         $$ = $2; /* Propagate, transfer ownership */
+         $$ = $2;
          std::cout << "Debug: Primary ( expression )" << std::endl;
       }
     ;
@@ -258,7 +241,6 @@ postfix_expression
             yyerror("Attempting to index non-array type");
             delete array_attr; delete index_attr; $$ = nullptr;
         } else if (!index_attr->type || index_attr->type->base != TYPE_INTEGER) {
-            // Allow char index? For now, strictly integer as per C standard practice.
             yyerror("Array index must be an integer expression");
             delete array_attr; delete index_attr; $$ = nullptr;
         } else {
@@ -270,12 +252,11 @@ postfix_expression
             Symbol* offset_sym = nullptr;
 
             if (element_size == 1) {
-                // Optimization: If element size is 1 (char), offset is just the index
                 offset_sym = index_sym;
                 std::cout << "Debug: Array offset calculation (size 1): offset = index (" << index_sym->name << ")" << std::endl;
             } else {
                 // Create temporary for element size constant
-                TypeInfo* int_type = new TypeInfo(TYPE_INTEGER, 4); // Assuming int size for calculation
+                TypeInfo* int_type = new TypeInfo(TYPE_INTEGER, 4); // Assuming int
                 Symbol* size_const_sym = new_temp(int_type);
                 emit(OP_ASSIGN, size_const_sym->name, std::to_string(element_size));
 
@@ -378,7 +359,7 @@ postfix_expression
                     // Get parameter count
                     int param_count = std::stoi($3->place->name);
                     
-                    // Emit parameters in reverse order (C calling convention)
+                    // Emit parameters
                     if ($3->param_names) {
                         for (auto it = $3->param_names->begin(); it != $3->param_names->end(); ++it) {
                             emit(OP_PARAM, *it);
@@ -404,10 +385,9 @@ postfix_expression
                 }
             }
         }
-    | postfix_expression ARROW IDENTIFIER { /* Phase ? */ delete[] $3; $$ = nullptr; delete $1; }
+    | postfix_expression ARROW IDENTIFIER { delete[] $3; $$ = nullptr; delete $1; }
     ;
 
-/* Revised for parameter passing */
 argument_expression_list
     : assignment_expression
         {
@@ -423,12 +403,6 @@ argument_expression_list
                 // Add first parameter to the vector
                 $$->param_names->push_back($1->place->name);
 
-                // Emit parameter quad
-                // emit(OP_PARAM, $1->place->name);
-                
-                // Count parameters (1 so far)
-                // $$ = new ExprAttributes();
-                // We'll use the place field to store parameter count (as string)
                 Symbol* count_sym = new Symbol("1");
                 count_sym->initial_value = $1->place->name; // Store first param name
                 $$->place = count_sym;
@@ -449,8 +423,6 @@ argument_expression_list
                 $$ = nullptr;
             } else {
                 // Emit parameter quad for the new argument
-                // emit(OP_PARAM, $3->place->name);
-
                 $1->param_names->push_back($3->place->name);
 
                 // Increment parameter count
@@ -460,7 +432,6 @@ argument_expression_list
 
                 // Update return value
                 $$ = $1; // Reuse attributes from argument_expression_list
-                // $$->place->name = std::to_string(current_count); // Update count
                 
                 std::cout << "Debug: Added parameter #" << current_count << " to call" << std::endl;
                 
@@ -484,11 +455,13 @@ unary_expression
             ptr_type->ptr_type = new TypeInfo(*(operand_attr->type)); // Copy operand's type
             Symbol* result_temp = new_temp(ptr_type); // Temp to hold the address
             emit(OP_ADDR, result_temp->name, operand_attr->place->name); // result = &operand
+
             $$ = new ExprAttributes();
             $$->place = result_temp; // Place holds the address temp
             $$->type = ptr_type;     // Type is pointer
             $$->is_deref_lvalue = false;
             $$->pointer_sym_for_lvalue = nullptr; // Not applicable
+
             std::cout << "Debug: Unary Op & -> " << result_temp->name << std::endl;
             delete operand_attr;
         }
@@ -502,6 +475,7 @@ unary_expression
          } else {
              // Type of the result is the type being pointed to
              TypeInfo* pointed_to_type = new TypeInfo(*(operand_attr->type->ptr_type)); // Create a copy
+
              // Create a temporary to hold the result of the dereference
              Symbol* result_temp = new_temp(pointed_to_type);
 
@@ -517,12 +491,6 @@ unary_expression
              std::cout << "Debug: Unary Op * emitted: " << result_temp->name << " = *"
                        << operand_attr->place->name << ". Storing pointer '"
                        << $$->pointer_sym_for_lvalue->name << "' for potential L-value use." << std::endl;
-
-             // Don't delete operand_attr->place (it's 'p', owned by symbol table)
-             // *** FIX: Do NOT delete operand_attr->type if it points to a symbol's type ***
-             // delete operand_attr->type; // <<< REMOVE THIS LINE
-             // Only delete operand_attr->type if it was created dynamically within operand_attr itself,
-             // which isn't the case when operand_attr comes from a primary_expression IDENTIFIER.
 
              // Delete the container struct for the original 'p' expression
              delete operand_attr;
@@ -551,8 +519,10 @@ unary_expression
                      Symbol* operand_place = operand_attr->place;
                      Symbol* result_temp = new_temp(temp_result_base_type);
                      emit(op, result_temp->name, operand_place->name);
+
                      $$ = new ExprAttributes(); $$->place = result_temp; $$->type = result_temp->type; /* No lists */
                      std::cout << "Debug: Unary Op " << opcode_to_string(op) << " -> " << result_temp->name << std::endl;
+
                      delete operand_attr;
                 }
             }
@@ -560,7 +530,7 @@ unary_expression
       }
     ;
 
-unary_operator /* Return opcode as int/ival */
+unary_operator 
     : '+' { $$ = (int)OP_UPLUS; }
     | '-' { $$ = (int)OP_UMINUS; }
     | '!' { $$ = (int)OP_NOT; }
@@ -586,12 +556,16 @@ multiplicative_expression
                 TypeInfo* required_type = (temp_result_base_type->base == TYPE_FLOAT) ? temp_result_base_type : left_attr->type;
                 Symbol* left_operand = convert_type(left_attr->place, required_type);
                 Symbol* right_operand = convert_type(right_attr->place, required_type);
+
                 if (left_operand != left_attr->place || right_operand != right_attr->place) { std::cout << "Debug: Conversion applied for " << opcode_to_string(OP_MULT) << std::endl; }
+
                 Symbol* result_temp = new_temp(temp_result_base_type);
                 emit(OP_MULT, result_temp->name, left_operand->name, right_operand->name);
+
                 $$ = new ExprAttributes();
                 $$->place = result_temp;
                 $$->type = result_temp->type;
+
                 std::cout << "Debug: Binary Op *: " << left_operand->name << ", " << right_operand->name << " -> " << result_temp->name << std::endl;
                 delete left_attr; delete right_attr;
             }
@@ -615,12 +589,16 @@ multiplicative_expression
                 TypeInfo* required_type = (temp_result_base_type->base == TYPE_FLOAT) ? temp_result_base_type : left_attr->type;
                 Symbol* left_operand = convert_type(left_attr->place, required_type);
                 Symbol* right_operand = convert_type(right_attr->place, required_type);
+
                 if (left_operand != left_attr->place || right_operand != right_attr->place) { std::cout << "Debug: Conversion applied for " << opcode_to_string(OP_DIV) << std::endl; }
+
                 Symbol* result_temp = new_temp(temp_result_base_type);
                 emit(OP_DIV, result_temp->name, left_operand->name, right_operand->name);
+
                 $$ = new ExprAttributes();
                 $$->place = result_temp;
                 $$->type = result_temp->type;
+
                 std::cout << "Debug: Binary Op /: " << left_operand->name << ", " << right_operand->name << " -> " << result_temp->name << std::endl;
                 delete left_attr; delete right_attr;
             }
@@ -644,12 +622,16 @@ multiplicative_expression
                 TypeInfo* required_type = (temp_result_base_type->base == TYPE_FLOAT) ? temp_result_base_type : left_attr->type; /* Should be int only for MOD */
                 Symbol* left_operand = convert_type(left_attr->place, required_type);
                 Symbol* right_operand = convert_type(right_attr->place, required_type);
+
                 if (left_operand != left_attr->place || right_operand != right_attr->place) { std::cout << "Debug: Conversion applied for " << opcode_to_string(OP_MOD) << std::endl; }
+
                 Symbol* result_temp = new_temp(temp_result_base_type);
                 emit(OP_MOD, result_temp->name, left_operand->name, right_operand->name);
+
                 $$ = new ExprAttributes();
                 $$->place = result_temp;
                 $$->type = result_temp->type;
+
                 std::cout << "Debug: Binary Op %: " << left_operand->name << ", " << right_operand->name << " -> " << result_temp->name << std::endl;
                 delete left_attr; delete right_attr;
             }
@@ -677,12 +659,16 @@ additive_expression
                 TypeInfo* required_type = (temp_result_base_type->base == TYPE_FLOAT) ? temp_result_base_type : left_attr->type;
                 Symbol* left_operand = convert_type(left_attr->place, required_type);
                 Symbol* right_operand = convert_type(right_attr->place, required_type);
+
                 if (left_operand != left_attr->place || right_operand != right_attr->place) { std::cout << "Debug: Conversion applied for " << opcode_to_string(OP_PLUS) << std::endl; }
+
                 Symbol* result_temp = new_temp(temp_result_base_type);
                 emit(OP_PLUS, result_temp->name, left_operand->name, right_operand->name);
+
                 $$ = new ExprAttributes();
                 $$->place = result_temp;
                 $$->type = result_temp->type;
+
                 std::cout << "Debug: Binary Op +: " << left_operand->name << ", " << right_operand->name << " -> " << result_temp->name << std::endl;
                 delete left_attr; delete right_attr;
             }
@@ -706,20 +692,22 @@ additive_expression
                 TypeInfo* required_type = (temp_result_base_type->base == TYPE_FLOAT) ? temp_result_base_type : left_attr->type;
                 Symbol* left_operand = convert_type(left_attr->place, required_type);
                 Symbol* right_operand = convert_type(right_attr->place, required_type);
+
                 if (left_operand != left_attr->place || right_operand != right_attr->place) { std::cout << "Debug: Conversion applied for " << opcode_to_string(OP_MINUS) << std::endl; }
+
                 Symbol* result_temp = new_temp(temp_result_base_type);
                 emit(OP_MINUS, result_temp->name, left_operand->name, right_operand->name);
+
                 $$ = new ExprAttributes();
                 $$->place = result_temp;
                 $$->type = result_temp->type;
+
                 std::cout << "Debug: Binary Op -: " << left_operand->name << ", " << right_operand->name << " -> " << result_temp->name << std::endl;
                 delete left_attr; delete right_attr;
             }
         }
       }
     ;
-
-/* Skip SHL/SHR */
 
 relational_expression
     : additive_expression { $$ = $1; } /* Only propagate if non-boolean */
@@ -731,11 +719,14 @@ relational_expression
             else { delete bool_type; /* Only needed for check */
                 TypeInfo* cmp_type = (left_attr->type->base == TYPE_FLOAT || right_attr->type->base == TYPE_FLOAT) ? new TypeInfo(TYPE_FLOAT, 8) : new TypeInfo(TYPE_INTEGER, 4);
                 Symbol* lop = convert_type(left_attr->place, cmp_type); Symbol* rop = convert_type(right_attr->place, cmp_type); delete cmp_type;
+
                 $$ = new ExprAttributes(); $$->type = new TypeInfo(TYPE_BOOL, 1);
                 $$->truelist = new BackpatchList(makelist(get_next_quad_index()));
                 $$->falselist = new BackpatchList(makelist(get_next_quad_index() + 1));
+
                 emit(OP_IF_LT, "", lop->name, rop->name);
                 emit(OP_GOTO, "");
+
                 std::cout << "Debug: Relational Op < generated jumps" << std::endl;
                 delete left_attr; delete right_attr; } }
       }
@@ -747,9 +738,12 @@ relational_expression
             else { delete bool_type;
                 TypeInfo* cmp_type = (left_attr->type->base == TYPE_FLOAT || right_attr->type->base == TYPE_FLOAT) ? new TypeInfo(TYPE_FLOAT, 8) : new TypeInfo(TYPE_INTEGER, 4);
                 Symbol* lop = convert_type(left_attr->place, cmp_type); Symbol* rop = convert_type(right_attr->place, cmp_type); delete cmp_type;
+
                 $$ = new ExprAttributes(); $$->type = new TypeInfo(TYPE_BOOL, 1);
                 $$->truelist = new BackpatchList(makelist(get_next_quad_index())); $$->falselist = new BackpatchList(makelist(get_next_quad_index() + 1));
+
                 emit(OP_IF_GT, "", lop->name, rop->name); emit(OP_GOTO, "");
+
                 std::cout << "Debug: Relational Op > generated jumps" << std::endl;
                 delete left_attr; delete right_attr; } }
       }
@@ -761,9 +755,12 @@ relational_expression
             else { delete bool_type;
                 TypeInfo* cmp_type = (left_attr->type->base == TYPE_FLOAT || right_attr->type->base == TYPE_FLOAT) ? new TypeInfo(TYPE_FLOAT, 8) : new TypeInfo(TYPE_INTEGER, 4);
                 Symbol* lop = convert_type(left_attr->place, cmp_type); Symbol* rop = convert_type(right_attr->place, cmp_type); delete cmp_type;
+
                 $$ = new ExprAttributes(); $$->type = new TypeInfo(TYPE_BOOL, 1);
                 $$->truelist = new BackpatchList(makelist(get_next_quad_index())); $$->falselist = new BackpatchList(makelist(get_next_quad_index() + 1));
+
                 emit(OP_IF_LE, "", lop->name, rop->name); emit(OP_GOTO, "");
+
                 std::cout << "Debug: Relational Op <= generated jumps" << std::endl;
                 delete left_attr; delete right_attr; } }
       }
@@ -783,8 +780,10 @@ relational_expression
                 delete bool_type;
                 TypeInfo* cmp_type = (left_attr->type->base == TYPE_FLOAT || right_attr->type->base == TYPE_FLOAT) ? new TypeInfo(TYPE_FLOAT, 8) : new TypeInfo(TYPE_INTEGER, 4);
                 Symbol* lop = convert_type(left_attr->place, cmp_type); Symbol* rop = convert_type(right_attr->place, cmp_type); delete cmp_type;
+
                 $$ = new ExprAttributes(); $$->type = new TypeInfo(TYPE_BOOL, 1);
                 $$->truelist = new BackpatchList(makelist(get_next_quad_index())); $$->falselist = new BackpatchList(makelist(get_next_quad_index() + 1));
+
                 emit(OP_IF_GE, "", lop->name, rop->name); emit(OP_GOTO, "");
                 std::cout << "Debug: Relational Op >= generated jumps" << std::endl;
                 delete left_attr; delete right_attr; 
@@ -803,9 +802,12 @@ equality_expression
             else { delete bool_type;
                 TypeInfo* cmp_type = (left_attr->type->base == TYPE_FLOAT || right_attr->type->base == TYPE_FLOAT) ? new TypeInfo(TYPE_FLOAT, 8) : new TypeInfo(TYPE_INTEGER, 4);
                 Symbol* lop = convert_type(left_attr->place, cmp_type); Symbol* rop = convert_type(right_attr->place, cmp_type); delete cmp_type;
+
                 $$ = new ExprAttributes(); $$->type = new TypeInfo(TYPE_BOOL, 1);
                 $$->truelist = new BackpatchList(makelist(get_next_quad_index())); $$->falselist = new BackpatchList(makelist(get_next_quad_index() + 1));
+
                 emit(OP_IF_EQ, "", lop->name, rop->name); emit(OP_GOTO, "");
+
                 std::cout << "Debug: Equality Op == generated jumps" << std::endl;
                 delete left_attr; delete right_attr; } }
       }
@@ -817,15 +819,16 @@ equality_expression
             else { delete bool_type;
                 TypeInfo* cmp_type = (left_attr->type->base == TYPE_FLOAT || right_attr->type->base == TYPE_FLOAT) ? new TypeInfo(TYPE_FLOAT, 8) : new TypeInfo(TYPE_INTEGER, 4);
                 Symbol* lop = convert_type(left_attr->place, cmp_type); Symbol* rop = convert_type(right_attr->place, cmp_type); delete cmp_type;
+
                 $$ = new ExprAttributes(); $$->type = new TypeInfo(TYPE_BOOL, 1);
                 $$->truelist = new BackpatchList(makelist(get_next_quad_index())); $$->falselist = new BackpatchList(makelist(get_next_quad_index() + 1));
+
                 emit(OP_IF_NE, "", lop->name, rop->name); emit(OP_GOTO, "");
+
                 std::cout << "Debug: Equality Op != generated jumps" << std::endl;
                 delete left_attr; delete right_attr; } }
       }
     ;
-
-/* Skip bitwise &, | */
 
 logical_AND_expression
     : equality_expression { $$ = $1; } /* Propagation */
@@ -836,10 +839,13 @@ logical_AND_expression
              yyerror("Operands for '&&' must be boolean"); delete left_attr; delete right_attr; delete marker_list; $$ = nullptr; }
         else {
              backpatch(*left_attr->truelist, marker_list->front()); // Backpatch left's TRUE to start of right expr
+
              $$ = new ExprAttributes(); $$->type = left_attr->type; // Result is boolean
              $$->truelist = right_attr->truelist; right_attr->truelist = nullptr; // Transfer ownership of right's truelist
              $$->falselist = new BackpatchList(mergelist(*left_attr->falselist, *right_attr->falselist)); // Merge falselists
+
              std::cout << "Debug: Logical AND processed" << std::endl;
+
              // Cleanup owned resources
              delete left_attr->truelist; delete left_attr->falselist; delete left_attr;
              delete right_attr->falselist; delete right_attr; // right's truelist was transferred
@@ -857,10 +863,13 @@ logical_OR_expression
              yyerror("Operands for '||' must be boolean"); delete left_attr; delete right_attr; delete marker_list; $$ = nullptr; }
         else {
              backpatch(*left_attr->falselist, marker_list->front()); // Backpatch left's FALSE to start of right expr
+
              $$ = new ExprAttributes(); $$->type = left_attr->type; // Result is boolean
              $$->truelist = new BackpatchList(mergelist(*left_attr->truelist, *right_attr->truelist)); // Merge truelists
              $$->falselist = right_attr->falselist; right_attr->falselist = nullptr; // Transfer ownership of right's falselist
+
              std::cout << "Debug: Logical OR processed" << std::endl;
+
              // Cleanup owned resources
              delete left_attr->truelist; delete left_attr->falselist; delete left_attr;
              delete right_attr->truelist; delete right_attr; // right's falselist was transferred
@@ -873,7 +882,6 @@ conditional_expression /* Ternary '?:' - Skip */
     : logical_OR_expression { $$ = $1; }
     ;
 
-// filepath: /home/IPLL/a9_2/a9_220101003.y
 assignment_expression
     : conditional_expression { $$ = $1; } /* Propagation */
     | unary_expression '=' assignment_expression
@@ -887,8 +895,6 @@ assignment_expression
         }
         // --- L-value Dereference Assignment (*p = ...) ---
         else if (lhs_attr->is_deref_lvalue) {
-            // ... existing pointer assignment code ...
-            // (Ensure cleanup is correct as per previous fixes)
             if (!lhs_attr->pointer_sym_for_lvalue || !lhs_attr->type /* type pointed to */ || !rhs_attr->type || !rhs_attr->place) {
                 yyerror("Internal error or invalid RHS for assignment to pointer dereference");
                 delete lhs_attr; delete rhs_attr; $$ = nullptr;
@@ -923,8 +929,6 @@ assignment_expression
 
                     std::cout << "Debug: Assignment *(" << lhs_attr->pointer_sym_for_lvalue->name << ") = ... : *" << lhs_attr->pointer_sym_for_lvalue->name << " = " << rhs_operand->name << std::endl;
 
-                    // Cleanup: lhs_attr->type might be a copy created in unary *, manage its memory.
-                    // Assuming TypeInfo created in unary * is leaked for now to avoid crash.
                     delete lhs_attr;
                     delete rhs_attr;
                 }
@@ -948,6 +952,7 @@ assignment_expression
                     if (assign_check_type != target_type) { delete assign_check_type; } // Delete if new
 
                     Symbol* rhs_operand = rhs_attr->place;
+
                     // Convert RHS if necessary
                     if (*source_type != *target_type) {
                         std::cout << "Debug: Types differ for array assignment, attempting conversion." << std::endl;
@@ -980,8 +985,6 @@ assignment_expression
         }
         // --- Normal Assignment (variable = ...) ---
         else {
-            // ... existing variable assignment code ...
-            // (Ensure cleanup is correct as per previous fixes)
              if (!lhs_attr->place || lhs_attr->place->is_temp) {
                 yyerror("L-value required for assignment target");
                 delete lhs_attr; delete rhs_attr; $$ = nullptr;
@@ -1057,15 +1060,13 @@ init_declarator_list
 init_declarator
     : declarator // $1 is decl_attr_ptr
         {
-          /* Phase 2: Create pending symbol (MODIFIED) */
+          /* Phase 2: Create pending symbol */
           std::string var_name = $1->name;
           Symbol* sym = insert_symbol(var_name, nullptr); // Insert symbol first
           if (sym == nullptr) { yyerror(("Redeclaration of variable '" + var_name + "'").c_str()); }
           else {
-              // Store declarator attributes (pointer type chain, array dims) with symbol
-              // The base type will be applied later by apply_pending_types
-              sym->type = $1->type; // <<< Store pointer chain (or null)
-              $1->type = nullptr;   // <<< Transfer ownership to symbol
+              sym->type = $1->type; // Store pointer chain (or null)
+              $1->type = nullptr;   // Transfer ownership to symbol
               if ($1->array_dim > 0) { sym->pending_dims.push_back($1->array_dim); }
               pending_type_symbols.push_back(sym);
               std::cout << "Debug: Created pending symbol '" << var_name << "'" << std::endl;
@@ -1074,7 +1075,7 @@ init_declarator
         }
     | declarator '=' initializer // $1 is decl_attr_ptr, $3 is expr_attr_ptr
         {
-          /* Phase 2/3: Create pending symbol & init TAC (MODIFIED) */
+          /* Phase 2/3: Create pending symbol & init TAC  */
           std::string var_name = $1->name;
           Symbol* sym = insert_symbol(var_name, nullptr);
           ExprAttributes* init_attr = $3;
@@ -1082,11 +1083,10 @@ init_declarator
           if (sym == nullptr) {
               yyerror(("Redeclaration of variable '" + var_name + "'").c_str());
               if (init_attr) delete init_attr;
-              // delete $1->type; // Clean up pointer chain if declarator owned it - NO, transferred below
           } else {
               // Store declarator attributes with symbol
-              sym->type = $1->type; // <<< Store pointer chain (or null)
-              $1->type = nullptr;   // <<< Transfer ownership to symbol
+              sym->type = $1->type; // Store pointer chain (or null)
+              $1->type = nullptr;   // Transfer ownership to symbol
               if ($1->array_dim > 0) { sym->pending_dims.push_back($1->array_dim); }
               pending_type_symbols.push_back(sym);
               std::cout << "Debug: Created pending symbol '" << var_name << "' with initializer" << std::endl;
@@ -1117,19 +1117,20 @@ type_specifier /* Phase 2: Creates TypeInfo */
     | BOOL     { $$ = new TypeInfo(TYPE_BOOL, 1); }
     ;
 
-declarator /* Phase 2: Passes up DeclaratorAttributes (MODIFIED) */
+declarator /* Phase 2: Passes up DeclaratorAttributes  */
     : pointer direct_declarator
         {
             $$ = $2; // Get name etc. from direct_declarator
             // Store the pointer type chain built by 'pointer' rule
             // It will be combined with the base type later by apply_pending_types
+
             $$->type = $1; // $1 is TypeInfo* chain from pointer rule
             std::cout << "Debug: Declarator with pointer chain for '" << $$->name << "'" << std::endl;
         }
     | direct_declarator
         {
             $$ = $1;
-            $$->type = nullptr; // Indicate no pointer part
+            $$->type = nullptr;
             std::cout << "Debug: Declarator without pointer chain for '" << $$->name << "'" << std::endl;
         }
     ;
@@ -1145,22 +1146,18 @@ direct_declarator /* Phase 2: Creates DeclaratorAttributes */
           else { $$->array_dim = $3; }
         }
     | direct_declarator '[' ']' { $$ = $1; yyerror("Array dimension must be specified"); }
-    | direct_declarator '(' parameter_list ')' /* <<< MODIFIED RULE */
+    | direct_declarator '(' parameter_list ')'
       {
           $$ = $1; /* Propagate attributes (name) from nested direct_declarator */
           $$->parameter_list = $3; /* Attach the collected parameter list ($3 is vector<Symbol*>*) */
           std::cout << "Debug: Attached parameter list to declarator for '" << $$->name << "'" << std::endl;
       }
-    | direct_declarator '(' identifier_list_opt ')' /* <<< Keep old style for now */
+    | direct_declarator '(' identifier_list_opt ')' 
       {
-          /* Phase 6 placeholder, Phase 3 needs name */
           $$ = $1; /* Propagate the attributes containing the name */
-          /* Parameters $3 not used yet */
-          // $$->parameter_list = nullptr; // Or handle identifier_list if needed
       }
     ;
 
-/* Parameters deferred */
 parameter_list /* Returns std::vector<Symbol*>* */
     : parameter_declaration
         {
@@ -1191,21 +1188,26 @@ parameter_declaration /* Returns Symbol* */
             std::string param_name = $2->name;
             Symbol* param_sym = nullptr; // Initialize
 
-            // *** Create the parameter symbol ***
+            // Create the parameter symbol
             TypeInfo* final_param_type = $1; // Start with base type ($1 owns this)
             if ($2->type) { // If declarator had pointer info
                 TypeInfo* ptr_chain = $2->type; // $2 owns this chain
                 TypeInfo* current = ptr_chain;
+
                 while(current->ptr_type) { current = current->ptr_type; }
+
                 current->ptr_type = final_param_type; // Link base type at the end
                 final_param_type = ptr_chain; // Final type is the head of the chain
                 // Base type $1 ownership is now part of the chain owned by final_param_type
             }
+
             // Handle array parameters (often treated as pointers)
             if ($2->array_dim > 0) {
                  TypeInfo* array_as_ptr_type = new TypeInfo(TYPE_POINTER, 8);
+
                  array_as_ptr_type->ptr_type = final_param_type; // Point to original element type
                  final_param_type = array_as_ptr_type; // Ownership transferred
+
                  std::cout << "Debug: Treating array parameter '" << param_name << "' as pointer." << std::endl;
             }
 
@@ -1216,7 +1218,6 @@ parameter_declaration /* Returns Symbol* */
                       << final_param_type->toString() << ")" << std::endl;
 
             // Cleanup declarator attributes struct ($2)
-            // $2->type ownership was transferred to final_param_type if it existed
             $2->type = nullptr; 
             delete $2; 
 
@@ -1261,10 +1262,11 @@ compound_statement /* Type: stmt_attr_ptr */
             if (current_function && current_symbol_table == global_symbol_table) { // If this is the top-level block for a function
                 scope_label = current_function->name;
             }
+
             SymbolTable* new_scope = begin_scope(scope_label); // Pass the label
             std::cout << "Debug: Entered compound_statement scope (Level " << new_scope->scope_level << ")" << std::endl;
 
-            // *** If in function context, add parameters to this new scope ***
+            // If in function context, add parameters to this new scope 
             if (current_function && new_scope->parent == global_symbol_table) { // Check if this is the function's top-level scope
                  std::cout << "Debug: Adding " << current_function->parameters.size() << " parameters to function scope." << std::endl;
                  for (Symbol* param : current_function->parameters) {
@@ -1274,22 +1276,19 @@ compound_statement /* Type: stmt_attr_ptr */
                          delete param; // Avoid leak if insert fails
                      } else {
                          std::cout << "Debug: Inserted parameter '" << param->name << "' into current scope." << std::endl;
-                         // Assign offset if needed (basic example)
+                         // Assign offset if needed
                          // param->offset = current_offset; current_offset += param->size; 
                      }
                  }
-                 // Clear the temporary list in the function symbol? Or keep for signature?
-                 // current_function->parameters.clear(); // Maybe not clear if needed elsewhere
             }
         }
       block_item_list_opt /* Type: stmt_attr_ptr */
       END_TOKEN
         {
             std::cout << "Debug: Exiting compound_statement scope (Level " << current_symbol_table->scope_level << ")" << std::endl; 
-            // *** RESTORE end_scope() ***
             end_scope(); 
             
-            $$ = $3 ? $3 : new StmtAttributes(); // If list was null, $$ gets new empty attributes
+            $$ = $3 ? $3 : new StmtAttributes(); 
         }
     ;
 
@@ -1300,13 +1299,13 @@ block_item_list_opt /* Type: stmt_attr_ptr */
 
 block_item_list /* Type: stmt_attr_ptr */
     : block_item { $$ = $1; /* First item's attributes */ }
-    | block_item_list M block_item /* --- Phase 4 Step 5: Sequencing --- */
+    | block_item_list M block_item 
       {
         StmtAttributes* list_attr = $1;
         BackpatchList* marker_list = $2; // Contains index of first quad of block_item ($3)
         StmtAttributes* item_attr = $3;
 
-        if (!list_attr) { // If first item was null (e.g., empty decl)
+        if (!list_attr) { // If first item was null 
             $$ = item_attr; // The current item becomes the effective start
             delete marker_list; // M not used for backpatching here
         } else {
@@ -1316,7 +1315,7 @@ block_item_list /* Type: stmt_attr_ptr */
                 std::cout << "Debug: Backpatched list at " << marker_list->front() << std::endl;
                 delete list_attr->nextlist; // Clean up the now-used list
             }
-            // The combined nextlist is the nextlist of the *last* statement ($3)
+            // The combined nextlist is the nextlist of the last statement ($3)
             if (item_attr) {
                  $$ = item_attr; // Transfer ownership of last item's attributes
             } else {
@@ -1330,19 +1329,19 @@ block_item_list /* Type: stmt_attr_ptr */
     ;
 
 block_item /* Type: stmt_attr_ptr */
-    : declaration { $$ = new StmtAttributes(); /* Declarations have no nextlist */ }
-    | statement   { $$ = $1; /* Propagate attributes from the actual statement */ }
+    : declaration { $$ = new StmtAttributes(); }
+    | statement   { $$ = $1; }
     ;
 
 expression_statement /* Type: stmt_attr_ptr */
     : ';' { $$ = new StmtAttributes(); }
-    | expression ';' { if ($1) delete $1; $$ = new StmtAttributes(); } /* Cleanup expr */
+    | expression ';' { if ($1) delete $1; $$ = new StmtAttributes(); } 
     ;
 
 
 selection_statement /* Type: stmt_attr_ptr */
     : IF '(' expression ')' M statement N %prec IFX
-        { // Action for IF (...) M S1 N %prec IFX
+        { 
             ExprAttributes* expr_attr = $3;
             BackpatchList* marker_M_list = $5; // List with quad index for start of 'then' statement
             StmtAttributes* stmt_attr = $6;
@@ -1401,7 +1400,6 @@ selection_statement /* Type: stmt_attr_ptr */
 
                 // Cleanup
                 delete expr_attr->truelist;
-                // expr_attr->falselist was transferred or null
                 delete expr_attr;
                 delete marker_M_list;
                 if (marker_N_list) delete marker_N_list; // Delete if not transferred
@@ -1413,15 +1411,11 @@ selection_statement /* Type: stmt_attr_ptr */
             }
         }
     | IF '(' expression ')' M statement N ELSE M statement
-        { // Action for IF ... M S1 N ELSE M S2
-            // --- KEEP THE EXISTING IF-ELSE LOGIC ---
-            // It correctly uses N's list ($7) to jump over the ELSE block.
-            // Ensure its memory management is also correct based on how mergelist works.
+        { 
             ExprAttributes* expr_attr = $3;
             BackpatchList* m1_list = $5;    // M before 'then'
             StmtAttributes* s1_attr = $6;   // 'then' statement
             BackpatchList* n_list = $7;     // List from N marker's GOTO (jump over else)
-            // $8 is ELSE
             BackpatchList* m2_list = $9;    // M before 'else'
             StmtAttributes* s2_attr = $10;  // 'else' statement
 
@@ -1514,10 +1508,6 @@ iteration_statement
               $$->nextlist = new BackpatchList();
           }
           
-          // 2. CRITICAL FIX: Insert jump to condition at end of increment section
-          // We need to manually insert a quad that jumps to condition between the
-          // increment code and the body code
-          
           // Calculate position to insert the jump (between increment and body)
           int body_start = body_marker->front();
           
@@ -1530,7 +1520,6 @@ iteration_statement
           // Adjust next_quad_index to account for the insertion
           next_quad_index++;
           
-          // *** CRITICAL FIX: Backpatch condition truelist to body+1 (after the inserted jump) ***
           if (cond_expr && cond_expr->truelist) {
               backpatch(*cond_expr->truelist, body_start + 1);
               std::cout << "Debug: Backpatched condition truelist to body at " 
@@ -1649,7 +1638,7 @@ function_definition
                     std::cout << "Debug: Created function symbol '" << func_name << "' with return type " 
                              << func_sym->type->return_type->toString() << std::endl;
 
-                    // *** Process collected parameters ***
+                    // Process collected parameters 
                     if ($2->parameter_list) {
                         func_sym->parameters = *$2->parameter_list; // Copy vector content (symbols are now owned by func_sym)
                         // Build param_types for the function type signature
@@ -1665,7 +1654,7 @@ function_definition
                     } else {
                          std::cout << "Debug: Function '" << func_name << "' has no parameters." << std::endl;
                     }
-                    // *** End parameter processing ***
+                    // End parameter processing 
 
                 } else {
                      yyerror(("Failed to insert function symbol '" + func_name + "'").c_str());
@@ -1677,7 +1666,7 @@ function_definition
                 }
             }
             
-            // Set global context *before* compound statement processes the body
+            // Set global context before compound statement processes the body
             current_function = func_sym; 
             
             // Emit function begin marker
@@ -1685,9 +1674,6 @@ function_definition
                 emit(OP_FUNC_BEGIN, func_name);
             }
             
-            // Clean up declarator attributes struct ($2)
-            // $2->parameter_list was handled above
-            // $2->type (pointer chain for func return type?) should be null or handled if functions can return pointers
             delete $2; 
         }
         compound_statement // This rule now handles the functions scope and adds params from current_function
@@ -1703,53 +1689,43 @@ function_definition
 
 %%
 
-/* External variable from lexer */
 FILE* lex_output = nullptr;
-
-/* Error Handling */
 void yyerror(const char* s) {
     std::cerr << "Syntax Error: " << s << " near '" << (yytext ? yytext : "EOF")
               << "' at line " << line_no << std::endl;
     exit(EXIT_FAILURE);
 }
 
-/* Main Function (from Phase 2) */
 int main(int argc, char** argv) {
     if (argc < 2) { std::cerr << "Usage: " << argv[0] << " <input_file>" << std::endl; return 1; }
     yyin = fopen(argv[1], "r");
     if (!yyin) { std::cerr << "Error: Cannot open input file: " << argv[1] << std::endl; return 1; }
 
     /* Lexer Output File Handling */
-    // --- MODIFIED PATH CONSTRUCTION ---
     std::string input_path_str = argv[1];
-    char* input_path_cstr = strdup(input_path_str.c_str()); // Create a modifiable copy for basename
-    std::string base_name = basename(input_path_cstr); // Extract filename (e.g., test.mc)
+    char* input_path_cstr = strdup(input_path_str.c_str()); 
+    std::string base_name = basename(input_path_cstr); 
     free(input_path_cstr); // Free the duplicated string
 
-    std::string output_dir = "output/"; // Define output directory
+    std::string output_dir = "output/";
 
     std::string lex_filename_str = output_dir + base_name + ".lex.out";
-    // --- END MODIFIED PATH CONSTRUCTION ---
 
     lex_output = fopen(lex_filename_str.c_str(), "w");
     if (!lex_output) { std::cerr << "Warning: Cannot create lexer output file: " << lex_filename_str << std::endl; }
     else { std::cout << "Lexical analysis output will be written to " << lex_filename_str << std::endl; fprintf(lex_output, "LEXICAL ANALYSIS FOR FILE: %s\n---\n", base_name.c_str()); }
 
-    /* Initialization & Parsing */
     initialize_symbol_tables();
     std::cout << "Starting parse for file: " << argv[1] << std::endl;
     int parse_result = yyparse();
     fclose(yyin);
 
-    /* Post-Parsing Output */
     if (parse_result == 0) {
         std::cout << "Parsing completed successfully." << std::endl;
-        // print_symbol_table(global_symbol_table); // Optional: Print symbol table to console or file
+        print_symbol_table(global_symbol_table);
 
-        // --- MODIFIED PATH CONSTRUCTION ---
         std::string tac_filename_str = output_dir + base_name + ".tac";
         std::string quad_filename_str = output_dir + base_name + ".quad";
-        // --- END MODIFIED PATH CONSTRUCTION ---
 
         print_tac(tac_filename_str); // Pass the full path
         print_quads(quad_filename_str); // Pass the full path

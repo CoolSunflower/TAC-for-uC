@@ -1,7 +1,7 @@
 CXX := g++
 BISON := bison
 FLEX := flex
-CXXFLAGS := -std=c++11 -Wall -Wextra -Isrc -Ibuild # Include src and build directories
+CXXFLAGS := -std=c++17 -Isrc -Ibuild # Include src and build directories
 LDFLAGS :=
 
 TARGET := microC_translator
@@ -40,7 +40,7 @@ build/lex.yy.cpp: src/a9_220101003.l build/a9_220101003.tab.hpp
 
 # Clean rule
 clean:
-	rm -rf build output $(TARGET)
+	rm -rf build $(TARGET)
 
 # Phony targets
 .PHONY: all clean
