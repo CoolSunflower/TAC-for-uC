@@ -14,8 +14,6 @@ int temp_counter = 0;
 Symbol* current_function = nullptr;
 std::vector<Symbol*> pending_type_symbols;
 
-// Add this helper function
-// --- Modify apply_pending_types ---
 void apply_pending_types(TypeInfo* base_type) {
     if (!base_type) {
          std::cerr << "Error: apply_pending_types called with null base_type." << std::endl;
@@ -47,9 +45,8 @@ void apply_pending_types(TypeInfo* base_type) {
             final_type = base_type_copy; // Just the base type copy, no pointers
         }
 
-        // Handle arrays (applied *after* pointer chain is built)
+        // Handle arrays (applied after pointer chain is built)
         if (!sym->pending_dims.empty()) {
-           // --- Array Handling Logic ---
             if (!final_type) { // Should not happen if base_type was valid
                 std::cerr << "Error: Cannot create array of unknown element type for '" << sym->name << "'" << std::endl;
                 // Clean up final_type if partially built? It should be null here.
@@ -71,7 +68,6 @@ void apply_pending_types(TypeInfo* base_type) {
                 final_type = array_type; // Symbol's type is now the array type
             }
             sym->pending_dims.clear(); // Processed dimensions
-            // --- End Array Handling ---
         }
 
         // Assign the final constructed type back to the symbol
@@ -89,10 +85,7 @@ void apply_pending_types(TypeInfo* base_type) {
     // delete base_type; // NO! Caller (declaration rule) deletes the original base_type.
 }
 
-// --- SymbolTable Class Definition (Basic for Phase 1) ---
 SymbolTable::~SymbolTable() {
-    // Basic cleanup - delete symbols owned by this table
-    // Careful: Nested tables might be managed elsewhere or need specific deletion logic
     for (auto const& [key, val] : symbols) {
         if (val) {
                 delete val->type; // Assuming type is owned by symbol
@@ -101,8 +94,6 @@ SymbolTable::~SymbolTable() {
         }
     }
     symbols.clear();
-    // Note: Deleting nested tables needs careful handling to avoid double deletes
-    // Might be better managed explicitly in end_scope or main cleanup
 }   
 
 Symbol* SymbolTable::lookup(const std::string& name) {
@@ -159,7 +150,6 @@ std::string TypeInfo::toString() const {
 // --- Quad Implementation (Modified) ---
 std::string opcode_to_string(op_code op) {
     switch(op) {
-        // Keep existing cases from paste-5.txt
         case OP_PLUS: return "+"; case OP_MINUS: return "-"; case OP_MULT: return "*";
         case OP_DIV: return "/"; case OP_MOD: return "%"; case OP_UMINUS: return "uminus";
         case OP_UPLUS: return "uplus"; case OP_LT: return "<"; case OP_GT: return ">";
@@ -579,8 +569,6 @@ TypeInfo* typecheck(TypeInfo* t1, TypeInfo* t2, op_code op) {
     }
 }
 
-
-// --- Phase 3: Implement convert_type ---
 Symbol* convert_type(Symbol* s, TypeInfo* target_type) {
     if (!s || !s->type || !target_type) {
         std::cerr << "Error: Cannot perform type conversion with missing type information." << std::endl;
@@ -594,8 +582,6 @@ Symbol* convert_type(Symbol* s, TypeInfo* target_type) {
         return s;
     }
 
-    // --- Add explicit check for matching pointer types (redundant if TypeInfo::operator== is correct) ---
-    // This helps diagnose if the issue is in the comparison operator vs. convert_type logic
     if (current_type->base == TYPE_POINTER && target_type->base == TYPE_POINTER) {
         // Recursively check pointed-to types if necessary, or assume compatible if base is POINTER
         // For now, let's assume if both are pointers, they are compatible for this phase if typecheck passed.
@@ -603,9 +589,7 @@ Symbol* convert_type(Symbol* s, TypeInfo* target_type) {
         std::cout << "Debug: convert_type sees matching pointer base types." << std::endl;
         return s; // Treat as matching
     }
-    // --- End explicit pointer check ---
 
-    // Allowed Conversion: Integer -> Float
     if (current_type->base == TYPE_INTEGER && target_type->base == TYPE_FLOAT) {
         std::cout << "Debug: Converting " << s->name << " from integer to float." << std::endl;
         TypeInfo* float_type = new TypeInfo(TYPE_FLOAT, 4); // Create the target type instance
@@ -614,7 +598,6 @@ Symbol* convert_type(Symbol* s, TypeInfo* target_type) {
         return temp;
     }
 
-    // --- ADDED: Allowed Conversion: Float -> Integer ---
     if (current_type->base == TYPE_FLOAT && target_type->base == TYPE_INTEGER) {
         std::cout << "Debug: Converting " << s->name << " from float to integer." << std::endl;
         TypeInfo* int_type = new TypeInfo(TYPE_INTEGER, 4); // Use correct size
@@ -622,25 +605,19 @@ Symbol* convert_type(Symbol* s, TypeInfo* target_type) {
         emit(OP_FLOAT2INT, temp->name, s->name);
         return temp;
     }
-    // --- END ADDED ---
 
     if (current_type->base == TYPE_CHAR && target_type->base == TYPE_INTEGER) {
         // No quad needs to be emitted, char is used as int directly.
-        // Return the original symbol.
         std::cout << "Debug: Implicit conversion char->int for " << s->name << std::endl; // Optional Debug
         return s;
     }
 
-    // --- ADDED: Allowed Conversion? Integer -> Char (Truncation/Implicit) ---
-    // Often allowed in C, might need OP_INT2CHAR if specific instruction needed
     if (current_type->base == TYPE_INTEGER && target_type->base == TYPE_CHAR) {
         std::cout << "Debug: Implicit conversion int->char for " << s->name << std::endl; // Optional Debug
         // Assuming direct use is okay, like char->int
         return s;
-   }
-   // --- END ADDED ---
+    }
 
-    // --- ADDED: Allowed Conversion? Char -> Float (via Int) ---
     if (current_type->base == TYPE_CHAR && target_type->base == TYPE_FLOAT) {
         std::cout << "Debug: Converting " << s->name << " from char to float (via int)." << std::endl;
         // Treat char as int first, then int to float
@@ -650,7 +627,6 @@ Symbol* convert_type(Symbol* s, TypeInfo* target_type) {
         emit(OP_INT2FLOAT, temp->name, s->name);
         return temp;
     }
-    // --- END ADDED ---
 
     // If no specific conversion rule matches, it's likely a type error
     // The caller (parser action after typecheck) should handle this mismatch.
@@ -661,22 +637,16 @@ Symbol* convert_type(Symbol* s, TypeInfo* target_type) {
 }
 
 BackpatchList makelist(int quad_index) {
-    // Phase 1: Just return an empty list.
-    // std::cout << "Debug: makelist called (Phase 1 stub)" << std::endl;
     return BackpatchList(1, quad_index); // Or return {quad_index};
 }
 
 BackpatchList mergelist(const BackpatchList& l1, const BackpatchList& l2) {
-    // Phase 1: Just return an empty list.
-    // std::cout << "Debug: mergelist called (Phase 1 stub)" << std::endl;
     BackpatchList result = l1;
     result.insert(result.end(), l2.begin(), l2.end());
     return result;
 }
 
 void backpatch(BackpatchList& list, int target_quad_index) {
-    // Phase 1: Do nothing.
-    // std::cout << "Debug: backpatch called (Phase 1 stub)" << std::endl;
     std::string target_str = std::to_string(target_quad_index);
     for (int index : list) {
         if (index >= 0 && index < quad_list.size()) {
@@ -689,7 +659,6 @@ void backpatch(BackpatchList& list, int target_quad_index) {
 }
 
 void print_symbol_table(SymbolTable* table_to_print, int level) {
-    /* Already defined correctly in paste-3.txt */
     if (!table_to_print) { table_to_print = global_symbol_table; }
     if (!table_to_print) return;
 
@@ -744,8 +713,6 @@ void print_symbol_table(SymbolTable* table_to_print, int level) {
 
 // Cleanup function definition
 void cleanup_translator() {
-    // Need a more robust recursive deletion for symbol tables & symbols
-    // Simple delete global_symbol_table might leak nested scopes/symbols
     delete global_symbol_table; // Placeholder - leaks memory
     global_symbol_table = nullptr;
     current_symbol_table = nullptr;

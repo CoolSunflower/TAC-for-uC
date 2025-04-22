@@ -878,7 +878,7 @@ logical_OR_expression
       }
     ;
 
-conditional_expression /* Ternary '?:' - Skip */
+conditional_expression 
     : logical_OR_expression { $$ = $1; }
     ;
 
